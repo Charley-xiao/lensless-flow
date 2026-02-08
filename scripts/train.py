@@ -18,6 +18,10 @@ from lensless_flow.losses import cfm_loss, physics_loss_from_v
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+
 
 def psnr(x_hat, x):
     mse = F.mse_loss(x_hat, x).item()
@@ -119,6 +123,8 @@ def main(cfg):
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
     ).to(device)
+    model = torch.compile(model)
+    print("Model params:", sum(p.numel() for p in model.parameters()))
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["train"]["lr"])
     scaler = GradScaler("cuda", enabled=cfg["train"]["amp"] and device.type == "cuda")

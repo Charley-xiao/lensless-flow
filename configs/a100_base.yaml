@@ -6,10 +6,10 @@ data:
   split: "train"
   downsample: 2
   flip_ud: false
-  num_workers: 8
+  num_workers: 12
 
 train:
-  batch_size: 32
+  batch_size: 64
   lr: 2.0e-4
   epochs: 200
   grad_clip: 1.0
@@ -45,4 +45,4 @@ wandb:
   name: null           # optional run name
   tags: ["cfm", "physics-guided", "diffusercam"]
   log_images_every: 1  # epochs
-  eval_batches: 20     # quick eval during training
+  eval_batches: 4     # quick eval during training
