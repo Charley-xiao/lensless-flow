@@ -12,6 +12,8 @@ Dataset:
 
 ## Install
 
+Install Python 3.11 first and then:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -19,7 +21,7 @@ pip install -r requirements.txt
 ## Train
 
 ```bash
-python -m scripts.train --config configs/default.yaml
+python -m scripts.train --config configs/base.yaml
 # On Google Colab, use the A100 config:
 python -m scripts.train --config configs/a100_{base/phys}.yaml
 ```
@@ -27,5 +29,6 @@ python -m scripts.train --config configs/a100_{base/phys}.yaml
 ## Sample / Visualize
 
 ```bash
-python -m scripts.sample --config configs/default.yaml --idx 0
+python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_epoch10.pt --idx 0 --steps 5,10,20,30,50 --cols 4
+
 ```

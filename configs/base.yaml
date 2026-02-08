@@ -11,7 +11,7 @@ data:
 train:
   batch_size: 8
   lr: 2.0e-4
-  epochs: 20
+  epochs: 200
   grad_clip: 1.0
   amp: false
   save_every: 1
@@ -27,19 +27,19 @@ cfm:
   sigma_data: 1.0  # used for normalization choices (optional)
   loss:
     v_weight: 1.0
-    physics_weight: 0.1   # set 0 to disable physics loss during training
+    physics_weight: 0.0   # set 0 to disable physics loss during training
 
 physics:
   dc_step_size: 0.02     # data-consistency step size during sampling
   dc_steps: 1            # number of DC gradient steps per time step
 
 sample:
-  steps: 30              # ODE Euler steps (NFE)
+  steps: 40              # ODE Euler steps (NFE)
   init_noise_std: 1.0
   save_dir: "outputs"
 
 wandb:
-  enabled: false
+  enabled: true
   project: "lensless-flow"
   entity: null         # or your username/team
   name: null           # optional run name

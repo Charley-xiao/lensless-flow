@@ -11,7 +11,7 @@ data:
 train:
   batch_size: 32
   lr: 2.0e-4
-  epochs: 20
+  epochs: 200
   grad_clip: 1.0
   amp: true
   save_every: 1
