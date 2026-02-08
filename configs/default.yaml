@@ -1,0 +1,48 @@
+seed: 123
+
+device: "cuda"
+
+data:
+  split: "train"
+  downsample: 2
+  flip_ud: false
+  num_workers: 4
+
+train:
+  batch_size: 8
+  lr: 2.0e-4
+  epochs: 20
+  grad_clip: 1.0
+  amp: false
+  save_every: 1
+
+model:
+  base_channels: 64
+  channel_mults: [1, 2, 4]
+  num_res_blocks: 2
+
+cfm:
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0  # used for normalization choices (optional)
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.1   # set 0 to disable physics loss during training
+
+physics:
+  dc_step_size: 0.02     # data-consistency step size during sampling
+  dc_steps: 1            # number of DC gradient steps per time step
+
+sample:
+  steps: 30              # ODE Euler steps (NFE)
+  init_noise_std: 1.0
+  save_dir: "outputs"
+
+wandb:
+  enabled: false
+  project: "lensless-flow"
+  entity: null         # or your username/team
+  name: null           # optional run name
+  tags: ["cfm", "physics-guided", "diffusercam"]
+  log_images_every: 1  # epochs
+  eval_batches: 20     # quick eval during training
