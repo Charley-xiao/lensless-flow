@@ -32,20 +32,29 @@ def sample_with_physics_guidance(
     denom_min: float = 0.05,
     clamp_x: bool = True,
     disable_physics: bool = False,
+    pred_type: str = "btb",   # "btb" or "vanilla"
 ):
     """
-    Heun / RK2 sampling for BTB x-prediction model.
+    Heun / RK2 sampling that supports two model parameterizations:
 
-    Model outputs x_pred:
-      x_pred = model(z_t, y, t)
-      v(z_t,t) = (x_pred - z_t) / (1 - t)
+    pred_type="vanilla":
+        model outputs v_pred directly:
+            v = model(z_t, y, t)
 
-    Heun step:
-      z_euler = z + dt * v(z,t)
-      z_next  = z + dt/2 * ( v(z,t) + v(z_euler,t+dt) )
+    pred_type="btb":
+        model outputs x_pred and we convert to velocity:
+            x_pred = model(z_t, y, t)
+            v = (x_pred - z_t) / (1 - t)   with denom clamp
 
-    Optional DC step after each RK2 step.
+    Then solve ODE with Heun:
+        z_euler = z + dt * v(z,t)
+        z_next  = z + dt/2 * ( v(z,t) + v(z_euler,t+dt) )
+
+    Optional DC after each RK2 step.
     """
+    pred_type = str(pred_type).lower()
+    assert pred_type in ["btb", "vanilla"], f"pred_type must be 'btb' or 'vanilla', got {pred_type}"
+
     device = y.device
     B = y.shape[0]
 
@@ -64,9 +73,12 @@ def sample_with_physics_guidance(
         t1b = torch.full((B,), float(t1), device=device, dtype=y.dtype)
 
         # --- v0 at (z, t0)
-        x0_pred = model(z, y, t0b)
-        den0 = (1.0 - t0b).clamp_min(denom_min).view(B, 1, 1, 1)
-        v0 = (x0_pred - z) / den0
+        out0 = model(z, y, t0b)
+        if pred_type == "vanilla":
+            v0 = out0
+        else:
+            den0 = (1.0 - t0b).clamp_min(denom_min).view(B, 1, 1, 1)
+            v0 = (out0 - z) / den0
 
         # predictor (Euler)
         z_euler = z + dt * v0
@@ -74,14 +86,17 @@ def sample_with_physics_guidance(
             z_euler = z_euler.clamp(0.0, 1.0)
 
         # --- v1 at (z_euler, t1)
-        x1_pred = model(z_euler, y, t1b)
-        den1 = (1.0 - t1b).clamp_min(denom_min).view(B, 1, 1, 1)
-        v1 = (x1_pred - z_euler) / den1
+        out1 = model(z_euler, y, t1b)
+        if pred_type == "vanilla":
+            v1 = out1
+        else:
+            den1 = (1.0 - t1b).clamp_min(denom_min).view(B, 1, 1, 1)
+            v1 = (out1 - z_euler) / den1
 
         # corrector (Heun)
         z = z + (dt * 0.5) * (v0 + v1)
 
-        # optional DC refinement (do it after the RK2 update)
+        # optional DC refinement (after RK2 update)
         if not disable_physics and dc_steps > 0 and dc_step > 0:
             z = _dc_refine(z, y, H, step=dc_step, iters=dc_steps)
 

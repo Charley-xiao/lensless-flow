@@ -37,10 +37,11 @@ def chw_to_wandb_image(x_bchw: torch.Tensor):
 
 
 @torch.no_grad()
-def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05):
+def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05, pred_type="btb"):
     """
-    Quick evaluation using sampler.py (Heun) + optional DC.
-    Keeps it small so it doesn't slow training too much.
+    Quick eval using sampler.py (Heun) with selectable pred_type:
+      - pred_type="vanilla": model outputs v directly
+      - pred_type="btb": model outputs x_pred and sampler converts to v
     """
     model.eval()
     psnr_list = []
@@ -62,6 +63,8 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05)
             init_noise_std=cfg["sample"]["init_noise_std"],
             denom_min=denom_min,
             clamp_x=True,
+            disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
+            pred_type=pred_type,
         )
 
         x_hat_c = x_hat.clamp(0, 1)
@@ -82,17 +85,23 @@ def main(cfg):
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
     # -------------------------
+    # Experiment mode (ablation switch)
+    # -------------------------
+    train_mode = str(cfg.get("train", {}).get("mode", "btb")).lower()
+    assert train_mode in ["btb", "vanilla"], f"cfg.train.mode must be 'btb' or 'vanilla', got {train_mode}"
+    pred_type = train_mode  # used consistently in eval/sampling logs
+
+    # -------------------------
     # W&B init
     # -------------------------
     wb = cfg.get("wandb", {})
     use_wandb = bool(wb.get("enabled", True))
-    run = None
     if use_wandb:
-        run = wandb.init(
+        wandb.init(
             project=wb.get("project", "lensless-flow"),
             entity=wb.get("entity", None),
             name=wb.get("name", None),
-            tags=wb.get("tags", ["btb", "cfm", "lensless"]),
+            tags=wb.get("tags", [pred_type, "cfm", "lensless"]),
             config=cfg,
         )
 
@@ -132,7 +141,7 @@ def main(cfg):
     Hop = FFTConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
     # -------------------------
-    # Model (x-prediction net)
+    # Model
     # -------------------------
     model = SimpleCondUNet(
         img_channels=C,
@@ -154,7 +163,7 @@ def main(cfg):
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
-        pbar = tqdm(train_dl, desc=f"epoch {epoch}")
+        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type})")
 
         # epoch accumulators
         sum_loss = 0.0
@@ -176,12 +185,20 @@ def main(cfg):
                 noise_std=cfg["sample"]["init_noise_std"],
             )
 
+            # BTB denom (only used in BTB)
             den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
 
             with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
-                # BTB: network predicts x; derive v
-                x_pred = model(x_t, y, t)
-                v_pred = (x_pred - x_t) / den
+                out = model(x_t, y, t)
+
+                if pred_type == "vanilla":
+                    # Vanilla FM: network directly outputs v_pred
+                    v_pred = out
+                    x_pred = None
+                else:
+                    # BTB: network outputs x_pred and we derive v_pred
+                    x_pred = out
+                    v_pred = (x_pred - x_t) / den
 
                 loss_v = cfm_loss(v_pred, v_star) * cfg["cfm"]["loss"]["v_weight"]
 
@@ -226,32 +243,35 @@ def main(cfg):
 
             # rich step logging (throttled)
             if use_wandb and (global_step % log_every == 0):
-                # simple numeric diagnostics
-                def rms(z):  # z: tensor
+                def rms(z: torch.Tensor):
                     return float(z.detach().float().pow(2).mean().sqrt().item())
 
-                nan_flag = (
-                    (torch.isnan(x_pred).any() or torch.isnan(v_pred).any() or torch.isnan(loss).any())
-                    or (torch.isinf(x_pred).any() or torch.isinf(v_pred).any() or torch.isinf(loss).any())
+                # nan checks
+                nan_or_inf = (
+                    torch.isnan(v_pred).any() or torch.isinf(v_pred).any()
+                    or torch.isnan(loss).any() or torch.isinf(loss).any()
                 )
+                if pred_type == "btb" and x_pred is not None:
+                    nan_or_inf = nan_or_inf or torch.isnan(x_pred).any() or torch.isinf(x_pred).any()
 
-                wandb.log(
-                    {
-                        "train/loss": float(loss),
-                        "train/loss_v": float(loss_v),
-                        "train/loss_phys": float(loss_phys),
-                        "train/grad_norm": float(grad_norm),
-                        "train/lr": float(lr),
-                        "train/denom_min": float(denom_min),
-                        "train/t_mean": float(t.mean().item()),
-                        "train/t_std": float(t.std(unbiased=False).item()),
-                        "diag/x_t_rms": rms(x_t),
-                        "diag/x_pred_rms": rms(x_pred),
-                        "diag/v_pred_rms": rms(v_pred),
-                        "diag/nan_or_inf": float(nan_flag),
-                    },
-                    step=global_step,
-                )
+                log_dict = {
+                    "train/loss": float(loss),
+                    "train/loss_v": float(loss_v),
+                    "train/loss_phys": float(loss_phys),
+                    "train/grad_norm": float(grad_norm),
+                    "train/lr": float(lr),
+                    "train/mode": 0.0 if pred_type == "vanilla" else 1.0,
+                    "train/t_mean": float(t.mean().item()),
+                    "train/t_std": float(t.std(unbiased=False).item()),
+                    "diag/x_t_rms": rms(x_t),
+                    "diag/v_pred_rms": rms(v_pred),
+                    "diag/nan_or_inf": float(nan_or_inf),
+                }
+                if pred_type == "btb" and x_pred is not None:
+                    log_dict["train/denom_min"] = float(denom_min)
+                    log_dict["diag/x_pred_rms"] = rms(x_pred)
+
+                wandb.log(log_dict, step=global_step)
 
             global_step += 1
 
@@ -271,9 +291,14 @@ def main(cfg):
                 step=global_step,
             )
 
-        # optional quick eval
+        # optional quick eval (uses same pred_type)
         if eval_batches > 0 and test_dl is not None:
-            metrics = quick_eval(model, Hop, test_dl, cfg, device, max_batches=eval_batches, denom_min=denom_min)
+            metrics = quick_eval(
+                model, Hop, test_dl, cfg, device,
+                max_batches=eval_batches,
+                denom_min=denom_min,
+                pred_type=pred_type,
+            )
             if use_wandb:
                 wandb.log(metrics, step=global_step)
             else:
@@ -295,6 +320,8 @@ def main(cfg):
                 init_noise_std=cfg["sample"]["init_noise_std"],
                 denom_min=denom_min,
                 clamp_x=True,
+                disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
+                pred_type=pred_type,
             )
 
             wandb.log(
@@ -308,16 +335,15 @@ def main(cfg):
 
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0:
-            ckpt_path = f"checkpoints/cfm_lensless_epoch{epoch}.pt"
-            torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt_path)
+            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}.pt"
+            torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
             print("Saved:", ckpt_path)
 
-            # optional: log checkpoint as artifact
             if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(
-                    name="cfm_lensless_btb",
+                    name=f"cfm_lensless_{pred_type}",
                     type="model",
-                    metadata={"epoch": epoch, "C": C, "H": H_img, "W": W_img, "denom_min": denom_min},
+                    metadata={"epoch": epoch, "C": C, "H": H_img, "W": W_img, "mode": pred_type, "denom_min": denom_min},
                 )
                 artifact.add_file(ckpt_path)
                 wandb.log_artifact(artifact, aliases=[f"epoch_{epoch}", "latest"])

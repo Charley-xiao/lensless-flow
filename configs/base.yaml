@@ -9,6 +9,7 @@ data:
   num_workers: 4
 
 train:
+  mode: "vanilla" # "vanilla" or "btb"
   batch_size: 8
   lr: 2.0e-4
   epochs: 200
@@ -30,6 +31,7 @@ cfm:
     physics_weight: 0.0   # set 0 to disable physics loss during training
 
 physics:
+  disable_in_eval: true
   dc_step_size: 0.02     # data-consistency step size during sampling
   dc_steps: 0            # number of DC gradient steps per time step
 
