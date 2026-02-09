@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-from torch.amp import autocast, GradScaler  # new AMP API
+from torch.amp import autocast, GradScaler
 
 import wandb
 
@@ -18,10 +18,6 @@ from lensless_flow.losses import cfm_loss, physics_loss_from_v
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
-
 
 def psnr(x_hat, x):
     mse = F.mse_loss(x_hat, x).item()
@@ -30,12 +26,25 @@ def psnr(x_hat, x):
     return 10.0 * torch.log10(torch.tensor(1.0 / mse)).item()
 
 
+def chw_to_wandb_image(x_bchw: torch.Tensor):
+    """[B,C,H,W] -> wandb.Image"""
+    x = x_bchw[0].detach().float().cpu()
+    x = x - x.min()
+    x = x / (x.max() + 1e-8)
+    if x.shape[0] == 1:
+        return wandb.Image(x[0].numpy())
+    return wandb.Image(x.permute(1, 2, 0).numpy())
+
+
 @torch.no_grad()
-def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20):
+def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05):
+    """
+    Quick evaluation using sampler.py (Heun) + optional DC.
+    Keeps it small so it doesn't slow training too much.
+    """
     model.eval()
     psnr_list = []
     dc_rmse_list = []
-    loss_dc_list = []
 
     for i, (y, x) in enumerate(test_dl):
         if i >= max_batches:
@@ -51,41 +60,41 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20):
             dc_step=cfg["physics"]["dc_step_size"],
             dc_steps=cfg["physics"]["dc_steps"],
             init_noise_std=cfg["sample"]["init_noise_std"],
-            disable_physics=False if cfg["cfm"]["loss"]["physics_weight"] > 0 else True,  # disable physics in sampling if not used in training
+            denom_min=denom_min,
+            clamp_x=True,
         )
 
         x_hat_c = x_hat.clamp(0, 1)
         x_c = x.clamp(0, 1)
 
         psnr_list.append(psnr(x_hat_c, x_c))
-
-        resid = Hop.forward(x_hat) - y
-        dc_rmse = resid.pow(2).mean().sqrt().item()
-        dc_rmse_list.append(dc_rmse)
-        loss_dc_list.append(resid.pow(2).mean().item())
+        dc_err = (Hop.forward(x_hat.float()) - y.float()).pow(2).mean().sqrt().item()
+        dc_rmse_list.append(dc_err)
 
     return {
         "eval/psnr": float(sum(psnr_list) / max(1, len(psnr_list))),
         "eval/dc_rmse": float(sum(dc_rmse_list) / max(1, len(dc_rmse_list))),
-        "eval/dc_mse": float(sum(loss_dc_list) / max(1, len(loss_dc_list))),
     }
-
-
-def chw_to_wandb_image(x_bchw):
-    """
-    x_bchw: [B,C,H,W] -> wandb.Image in HWC (or HW)
-    """
-    x = x_bchw[0].detach().float().cpu()
-    x = x - x.min()
-    x = x / (x.max() + 1e-8)
-    if x.shape[0] == 1:
-        return wandb.Image(x[0].numpy())
-    return wandb.Image(x.permute(1, 2, 0).numpy())
 
 
 def main(cfg):
     set_seed(cfg["seed"])
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+
+    # -------------------------
+    # W&B init
+    # -------------------------
+    wb = cfg.get("wandb", {})
+    use_wandb = bool(wb.get("enabled", True))
+    run = None
+    if use_wandb:
+        run = wandb.init(
+            project=wb.get("project", "lensless-flow"),
+            entity=wb.get("entity", None),
+            name=wb.get("name", None),
+            tags=wb.get("tags", ["btb", "cfm", "lensless"]),
+            config=cfg,
+        )
 
     # -------------------------
     # Data
@@ -97,25 +106,33 @@ def main(cfg):
         batch_size=cfg["train"]["batch_size"],
         num_workers=cfg["data"]["num_workers"],
     )
-    test_ds, test_dl = make_dataloader(
-        split="test",
-        downsample=cfg["data"]["downsample"],
-        flip_ud=cfg["data"]["flip_ud"],
-        batch_size=1,
-        num_workers=0,
-    )
 
+    # For quick eval + image logging (optional)
+    eval_batches = int(wb.get("eval_batches", 0) or 0)
+    log_images_every = int(wb.get("log_images_every", 0) or 0)
+    test_ds, test_dl = None, None
+    if eval_batches > 0 or log_images_every > 0:
+        test_ds, test_dl = make_dataloader(
+            split="test",
+            downsample=cfg["data"]["downsample"],
+            flip_ud=cfg["data"]["flip_ud"],
+            batch_size=1,
+            num_workers=0,
+        )
+
+    # -------------------------
     # PSF + operator
+    # -------------------------
     psf = to_nchw(train_ds.psf.to(device))  # [1,C,h,w] or [1,C,H,W]
     y0, x0 = train_ds[0]
     y0 = to_nchw(y0)  # [1,C,H,W]
-    x0 = to_nchw(x0)
+    x0 = to_nchw(x0)  # [1,C,H,W]
     C = y0.shape[1]
     H_img, W_img = y0.shape[-2], y0.shape[-1]
     Hop = FFTConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
     # -------------------------
-    # Model/opt
+    # Model (x-prediction net)
     # -------------------------
     model = SimpleCondUNet(
         img_channels=C,
@@ -123,58 +140,49 @@ def main(cfg):
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
     ).to(device)
-    model = torch.compile(model)
-    print("Model params:", sum(p.numel() for p in model.parameters()))
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["train"]["lr"])
-    scaler = GradScaler("cuda", enabled=cfg["train"]["amp"] and device.type == "cuda")
+    scaler = GradScaler("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda")
 
     ensure_dir("checkpoints")
 
-    # -------------------------
-    # W&B init
-    # -------------------------
-    wb = cfg.get("wandb", {})
-    use_wandb = bool(wb.get("enabled", True))
+    denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
 
-    run = None
-    if use_wandb:
-        run = wandb.init(
-            project=wb.get("project", "lensless-flow"),
-            entity=wb.get("entity", None),
-            name=wb.get("name", None),
-            tags=wb.get("tags", None),
-            config=cfg,  # saves full config
-        )
-        # Optional: watch gradients/params (can slow a bit)
-        # wandb.watch(model, log="gradients", log_freq=200)
-
+    # logging frequency
+    log_every = int(wb.get("log_every", 50))
     global_step = 0
 
-    # -------------------------
-    # Training loop
-    # -------------------------
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
+        pbar = tqdm(train_dl, desc=f"epoch {epoch}")
 
-        # running averages for epoch logging
+        # epoch accumulators
         sum_loss = 0.0
         sum_loss_v = 0.0
         sum_loss_phys = 0.0
         n_batches = 0
 
-        pbar = tqdm(train_dl, desc=f"epoch {epoch}")
         for y, x in pbar:
-            y = to_nchw(y).to(device)
-            x = to_nchw(x).to(device)
+            y = to_nchw(y).to(device, non_blocking=True)
+            x = to_nchw(x).to(device, non_blocking=True)
 
             b = x.shape[0]
             t = sample_t(b, cfg["cfm"]["t_min"], cfg["cfm"]["t_max"], device)
 
-            x_t, v_star, _ = cfm_forward(x0=x, y=y, t=t, noise_std=cfg["sample"]["init_noise_std"])
+            x_t, v_star, _ = cfm_forward(
+                x0=x,
+                y=y,
+                t=t,
+                noise_std=cfg["sample"]["init_noise_std"],
+            )
 
-            with autocast("cuda", enabled=(cfg["train"]["amp"] and device.type == "cuda")):
-                v_pred = model(x_t, y, t)
+            den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
+
+            with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
+                # BTB: network predicts x; derive v
+                x_pred = model(x_t, y, t)
+                v_pred = (x_pred - x_t) / den
+
                 loss_v = cfm_loss(v_pred, v_star) * cfg["cfm"]["loss"]["v_weight"]
 
                 loss_phys = torch.tensor(0.0, device=device)
@@ -187,12 +195,10 @@ def main(cfg):
             scaler.scale(loss).backward()
 
             # grad norm (after unscale)
-            grad_norm = None
+            scaler.unscale_(opt)
             if cfg["train"]["grad_clip"] is not None:
-                scaler.unscale_(opt)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["train"]["grad_clip"]).item()
             else:
-                scaler.unscale_(opt)
                 total = 0.0
                 for p in model.parameters():
                     if p.grad is not None:
@@ -202,24 +208,33 @@ def main(cfg):
             scaler.step(opt)
             scaler.update()
 
-            # LR (first param group)
             lr = opt.param_groups[0]["lr"]
 
-            # tqdm display
+            # tqdm
             pbar.set_postfix(
                 loss=float(loss),
                 loss_v=float(loss_v),
                 loss_phys=float(loss_phys),
+                gnorm=float(grad_norm),
             )
 
-            # accumulate epoch stats
+            # epoch stats
             sum_loss += float(loss)
             sum_loss_v += float(loss_v)
             sum_loss_phys += float(loss_phys)
             n_batches += 1
 
-            # per-step wandb logging (W&B uses step as x-axis by default) :contentReference[oaicite:2]{index=2}
-            if use_wandb:
+            # rich step logging (throttled)
+            if use_wandb and (global_step % log_every == 0):
+                # simple numeric diagnostics
+                def rms(z):  # z: tensor
+                    return float(z.detach().float().pow(2).mean().sqrt().item())
+
+                nan_flag = (
+                    (torch.isnan(x_pred).any() or torch.isnan(v_pred).any() or torch.isnan(loss).any())
+                    or (torch.isinf(x_pred).any() or torch.isinf(v_pred).any() or torch.isinf(loss).any())
+                )
+
                 wandb.log(
                     {
                         "train/loss": float(loss),
@@ -227,17 +242,20 @@ def main(cfg):
                         "train/loss_phys": float(loss_phys),
                         "train/grad_norm": float(grad_norm),
                         "train/lr": float(lr),
+                        "train/denom_min": float(denom_min),
                         "train/t_mean": float(t.mean().item()),
                         "train/t_std": float(t.std(unbiased=False).item()),
+                        "diag/x_t_rms": rms(x_t),
+                        "diag/x_pred_rms": rms(x_pred),
+                        "diag/v_pred_rms": rms(v_pred),
+                        "diag/nan_or_inf": float(nan_flag),
                     },
                     step=global_step,
                 )
 
             global_step += 1
 
-        # -------------------------
-        # End-of-epoch logging
-        # -------------------------
+        # epoch-level logging
         avg_loss = sum_loss / max(1, n_batches)
         avg_loss_v = sum_loss_v / max(1, n_batches)
         avg_loss_phys = sum_loss_phys / max(1, n_batches)
@@ -253,19 +271,16 @@ def main(cfg):
                 step=global_step,
             )
 
-        # quick eval every epoch (configurable)
-        eval_batches = int(wb.get("eval_batches", 0) or 0)
-        if eval_batches > 0:
-            metrics = quick_eval(model, Hop, test_dl, cfg, device, max_batches=eval_batches)
+        # optional quick eval
+        if eval_batches > 0 and test_dl is not None:
+            metrics = quick_eval(model, Hop, test_dl, cfg, device, max_batches=eval_batches, denom_min=denom_min)
             if use_wandb:
                 wandb.log(metrics, step=global_step)
             else:
                 print(metrics)
 
-        # log a few example images (y, x, x_hat) every N epochs
-        log_img_every = int(wb.get("log_images_every", 0) or 0)
-        if use_wandb and log_img_every > 0 and (epoch % log_img_every == 0):
-            # grab one fixed example from test set
+        # optional image logging
+        if use_wandb and log_images_every > 0 and test_ds is not None and (epoch % log_images_every == 0):
             y_ex, x_ex = test_ds[0]
             y_ex = to_nchw(y_ex).to(device)
             x_ex = to_nchw(x_ex).to(device)
@@ -278,7 +293,8 @@ def main(cfg):
                 dc_step=cfg["physics"]["dc_step_size"],
                 dc_steps=cfg["physics"]["dc_steps"],
                 init_noise_std=cfg["sample"]["init_noise_std"],
-                disable_physics=False if cfg["cfm"]["loss"]["physics_weight"] > 0 else True,  # disable physics in sampling if not used in training
+                denom_min=denom_min,
+                clamp_x=True,
             )
 
             wandb.log(
@@ -290,20 +306,18 @@ def main(cfg):
                 step=global_step,
             )
 
-        # -------------------------
-        # Checkpoint
-        # -------------------------
+        # checkpoint
         if epoch % cfg["train"]["save_every"] == 0:
             ckpt_path = f"checkpoints/cfm_lensless_epoch{epoch}.pt"
             torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt_path)
             print("Saved:", ckpt_path)
 
-            # Log as W&B Artifact (recommended way to track checkpoints) :contentReference[oaicite:3]{index=3}
-            if use_wandb:
+            # optional: log checkpoint as artifact
+            if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(
-                    name=f"cfm_lensless",
+                    name="cfm_lensless_btb",
                     type="model",
-                    metadata={"epoch": epoch, "img_channels": C, "H": H_img, "W": W_img},
+                    metadata={"epoch": epoch, "C": C, "H": H_img, "W": W_img, "denom_min": denom_min},
                 )
                 artifact.add_file(ckpt_path)
                 wandb.log_artifact(artifact, aliases=[f"epoch_{epoch}", "latest"])

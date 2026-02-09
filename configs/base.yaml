@@ -31,7 +31,7 @@ cfm:
 
 physics:
   dc_step_size: 0.02     # data-consistency step size during sampling
-  dc_steps: 1            # number of DC gradient steps per time step
+  dc_steps: 0            # number of DC gradient steps per time step
 
 sample:
   steps: 40              # ODE Euler steps (NFE)
@@ -41,8 +41,13 @@ sample:
 wandb:
   enabled: true
   project: "lensless-flow"
-  entity: null         # or your username/team
-  name: null           # optional run name
-  tags: ["cfm", "physics-guided", "diffusercam"]
-  log_images_every: 1  # epochs
-  eval_batches: 4     # quick eval during training
+  entity: null
+  name: null
+  tags: ["btb", "cfm", "lensless"]
+  log_every: 50          # step logging interval
+  eval_batches: 10       # quick eval batches (small!)
+  log_images_every: 1    # epoch interval
+  log_artifacts: true
+
+btb:
+  denom_min: 0.05
