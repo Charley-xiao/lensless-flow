@@ -167,6 +167,11 @@ def main(cfg):
     set_seed(cfg["seed"])
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
+    if cfg.get("is_a100", False) and device.type == "cuda":
+        # A100-specific optimization: enable TF32 for matmul and convolution
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     # -------------------------
     # Experiment mode (ablation switch)
     # -------------------------
@@ -231,6 +236,8 @@ def main(cfg):
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
     ).to(device)
+    if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
+        model = torch.compile(model, mode="max-autotune")
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["train"]["lr"])
     scaler = GradScaler("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda")

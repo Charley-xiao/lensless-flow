@@ -30,6 +30,10 @@ python -m scripts.train --config configs/base.yaml
 python -m scripts.train --config configs/a100_{base/phys}.yaml
 ```
 
+```bash
+python -m scripts.test_psf_alignment --config configs/base.yaml --idx 0 --save_dir debug_psf
+```
+
 ## Sample / Visualize
 
 ```bash

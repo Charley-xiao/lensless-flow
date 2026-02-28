@@ -1,0 +1,69 @@
+seed: 123
+
+device: "cuda"
+is_a100: true
+
+data:
+  split: "train"
+  downsample: 4
+  flip_ud: false
+  num_workers: 4
+
+train:
+  mode: "vanilla" # "vanilla" or "btb"
+  batch_size: 8
+  lr: 2.0e-4
+  epochs: 100
+  grad_clip: 1.0
+  amp: true
+  save_every: 1
+
+model:
+  base_channels: 64
+  channel_mults: [1, 2, 4]
+  num_res_blocks: 2
+
+cfm:
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0  # used for normalization choices (optional)
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0   # set 0 to disable physics loss during training
+
+physics:
+  disable_in_eval: true
+  dc_step_size: 0.02     # data-consistency step size during sampling
+  dc_steps: 0            # number of DC gradient steps per time step
+
+sample:
+  steps: 30
+  init_noise_std: 1.0
+  save_dir: "outputs"
+
+wandb:
+  enabled: true
+  project: "lensless-flow"
+  entity: null
+  name: null
+  tags: ["btb", "cfm", "lensless"]
+  log_every: 50          # step logging interval
+  eval_batches: 3        # quick eval batches (small!)
+  log_images_every: 1    # epoch interval
+  log_artifacts: true
+
+btb:
+  denom_min: 0.05
+
+sched:
+  enabled: true
+  metric: "eval/ssim"
+  mode: "max"
+  factor: 0.5
+  patience: 5
+  threshold: 1.0e-4
+  cooldown: 0
+  min_lr: 1.0e-6
+
+compile:
+  enabled: true
