@@ -11,7 +11,7 @@ data:
 
 train:
   mode: "vanilla" # "vanilla" or "btb"
-  batch_size: 96
+  batch_size: 128
   lr: 2.0e-4
   epochs: 100
   grad_clip: 1.0
@@ -37,7 +37,7 @@ physics:
   dc_steps: 0            # number of DC gradient steps per time step
 
 sample:
-  steps: 30
+  steps: 40
   init_noise_std: 1.0
   save_dir: "outputs"
 
@@ -66,4 +66,4 @@ sched:
   min_lr: 1.0e-6
 
 compile:
-  enabled: true
+  enabled: false
