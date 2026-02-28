@@ -3,3 +3,5 @@
 /outputs
 api-key.txt
 /wandb
+/.vscode
+/assets
