@@ -7,11 +7,11 @@ data:
   split: "train"
   downsample: 4
   flip_ud: false
-  num_workers: 4
+  num_workers: 10
 
 train:
   mode: "vanilla" # "vanilla" or "btb"
-  batch_size: 8
+  batch_size: 96
   lr: 2.0e-4
   epochs: 100
   grad_clip: 1.0
