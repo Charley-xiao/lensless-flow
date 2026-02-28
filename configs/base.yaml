@@ -53,3 +53,13 @@ wandb:
 
 btb:
   denom_min: 0.05
+
+sched:
+  enabled: true
+  metric: "eval/ssim"
+  mode: "max"
+  factor: 0.5
+  patience: 5
+  threshold: 1.0e-4
+  cooldown: 0
+  min_lr: 1.0e-6
