@@ -19,10 +19,27 @@ Dataset:
 > [!CAUTION]
 > The code does not require Python 3.11 anymore. Python 3.12 also works.
 
+### Locally
+
 Install Python 3.11 first and then:
 
 ```bash
 pip install -r requirements.txt
+```
+
+### On a cluster
+
+```bash
+conda create -n py312 python=3.12 -y
+conda activate py312
+pip install -r requirements.txt
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_TOKEN=<...>
+hf download bezzam/DiffuserCam-Lensless-Mirflickr-Dataset --repo-type dataset --local-dir <...>
+# Then go to configs/a100_base.yaml and set data.path to the local path of the downloaded dataset,
+# and set train.save_locally to true, wandb.log_artifacts to false.
+wandb login --relogin
+wandb offline
 ```
 
 ## Train
@@ -30,7 +47,7 @@ pip install -r requirements.txt
 ```bash
 python -m scripts.train --config configs/base.yaml
 # On Google Colab, use the A100 config:
-python -m scripts.train --config configs/a100_{base/phys}.yaml
+python -m scripts.train --config configs/a100_base.yaml
 ```
 
 ```bash

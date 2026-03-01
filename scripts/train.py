@@ -268,6 +268,9 @@ def main(cfg):
 
     log_every = int(wb.get("log_every", 50))
     global_step = 0
+    save_since_epoch = float(cfg["train"].get("save_since_epoch", 0.0)) # if <1, interpreted as fraction of total epochs; if >=1, interpreted as absolute epoch number
+    if save_since_epoch < 1.0:
+        save_since_epoch = int(cfg["train"]["epochs"] * save_since_epoch)
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
@@ -447,7 +450,7 @@ def main(cfg):
             )
 
         # checkpoint
-        if epoch % cfg["train"]["save_every"] == 0 and epoch >= cfg["train"]["save_since_epoch"]:
+        if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
             ssim = eval_metrics.get("eval/ssim", 0.0)
             if cfg["train"]["save_locally"]:
                 ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}_ssim{ssim:.4f}.pt"

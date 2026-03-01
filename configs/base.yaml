@@ -17,7 +17,7 @@ train:
   grad_clip: 1.0
   amp: true
   save_every: 3
-  save_since_epoch: 100
+  save_since_epoch: 0.5
   save_locally: true
 
 model:
