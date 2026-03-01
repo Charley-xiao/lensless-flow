@@ -32,6 +32,7 @@ pip install -r requirements.txt
 ```bash
 conda create -n py312 python=3.12 -y
 conda activate py312
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_TOKEN=<...>
