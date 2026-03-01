@@ -1,19 +1,37 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-def psf_to_otf(psf: torch.Tensor, out_hw: tuple[int, int]) -> torch.Tensor:
-    """
-    psf: [1,C,h,w] real
-    returns OTF: [1,C,H,W] complex for circular conv per channel
-    """
-    assert psf.ndim == 4, f"psf must be [1,C,h,w], got {psf.shape}"
-    _, C, h, w = psf.shape
-    H, W = out_hw
+def _ifftshift2(x):
+    # shift center -> (0,0) for last two dims
+    h, w = x.shape[-2], x.shape[-1]
+    return torch.roll(x, shifts=(-h // 2, -w // 2), dims=(-2, -1))
 
-    psf_pad = torch.zeros((1, C, H, W), dtype=psf.dtype, device=psf.device)
+def psf_to_otf(psf: torch.Tensor, im_hw: tuple[int, int]) -> torch.Tensor:
+    H, W = im_hw
+    # normalize shape to [1,C,h,w]
+    if psf.ndim == 2:
+        psf = psf[None, None, ...]
+    elif psf.ndim == 3:
+        psf = psf[None, ...]  # [1,C,h,w] if psf was [C,h,w]
+    elif psf.ndim == 4:
+        pass
+    else:
+        raise ValueError(f"psf ndim={psf.ndim} not supported")
+
+    B, C, h, w = psf.shape
+    assert B == 1, "psf batch dimension should be 1"
+
+    # pad to (H,W) at top-left then shift
+    psf_pad = torch.zeros((1, C, H, W), device=psf.device, dtype=psf.dtype)
     psf_pad[..., :h, :w] = psf
-    psf_pad = torch.fft.ifftshift(psf_pad, dim=(-2, -1))
-    return torch.fft.fft2(psf_pad)  # complex [1,C,H,W]
+
+    # IMPORTANT: center -> origin for FFT conv convention
+    psf_pad = _ifftshift2(psf_pad)
+
+    otf = torch.fft.fft2(psf_pad)  # complex [1,C,H,W]
+    return otf
+
 
 class FFTConvOperator(nn.Module):
     """

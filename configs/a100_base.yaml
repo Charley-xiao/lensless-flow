@@ -35,8 +35,8 @@ cfm:
 
 physics:
   disable_in_eval: true
-  dc_step_size: 0.02     # data-consistency step size during sampling
-  dc_steps: 0            # number of DC gradient steps per time step
+  dc_step_size: -1    # data-consistency step size during sampling (negative to auto-suggest)
+  dc_steps: 0         # number of DC refinement steps (0 to disable)
 
 sample:
   steps: 40

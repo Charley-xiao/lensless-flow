@@ -1,5 +1,13 @@
 import torch
 
+@torch.no_grad()
+def suggested_dc_step(Hop, safety=0.5, eps=1e-12):
+    # Hop.otf: [1,C,H,W] complex
+    L = (Hop.otf.abs() ** 2).amax().item()
+    # for grad of ||Hx-y||^2, gradient has factor 2
+    step = safety / (2.0 * (L + eps))
+    return float(step), float(L)
+
 
 def _dc_refine(x: torch.Tensor, y: torch.Tensor, H, step: float, iters: int) -> torch.Tensor:
     """
@@ -63,6 +71,12 @@ def sample_with_physics_guidance(
 
     # time grid
     ts = torch.linspace(0.0, 1.0, steps + 1, device=device, dtype=y.dtype)
+
+    # Auto DC step if user didn't specify (or set <=0)
+    if (not disable_physics) and dc_steps > 0 and (dc_step is None or dc_step <= 0):
+        safety = float(getattr(H, "dc_safety", 0.5))  # optional
+        dc_step, L = suggested_dc_step(H, safety=safety)
+        print(f"Auto DC step: {dc_step:.4e} (L={L:.4e}, safety={safety})")
 
     for k in range(steps):
         t0 = ts[k]
