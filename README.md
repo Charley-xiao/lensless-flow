@@ -14,6 +14,8 @@ Dataset:
 > There's still something wrong with the PSF guidance. Need to revise the math and implementation.
 > For the time being, set physics.dc_steps to 0 to disable the data-consistency steps during sampling.
 
+**Update: data consistency step is now correct if you use FFTLinearConvOperator instead of FFTConvOperator.**
+
 ## Install
 
 > [!CAUTION]
@@ -59,5 +61,5 @@ python -m scripts.test_psf_alignment --config configs/base.yaml --idx 0 --save_d
 
 ```bash
 python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_epoch10.pt --idx 0 --steps 5,10,20,30,50 --cols 4
-
+python -m scripts.eval --config configs/base.yaml --ckpt ...
 ```

@@ -52,6 +52,7 @@ def _dc_refine_luma(x: torch.Tensor, y: torch.Tensor, H, step: float, iters: int
       - H is FFTConvOperator with buffer H.otf of shape [1,C,H,W].
         We use only H.otf[:,0:1] as luma forward/adjoint.
     """
+    raise NotImplementedError("This is a work-in-progress and may not be fully correct yet. Use with caution.")
     if step <= 0 or iters <= 0:
         return x
 
@@ -107,7 +108,7 @@ def sample_with_physics_guidance(
     clamp_x: bool = True,
     disable_physics: bool = False,
     pred_type: str = "btb",   # "btb" or "vanilla"
-    dc_mode: str = "luma",    # "luma" (recommended) or "rgb"
+    dc_mode: str = "rgb",    # "luma" (recommended) or "rgb"
 ):
     """
     Heun / RK2 sampling that supports two model parameterizations:

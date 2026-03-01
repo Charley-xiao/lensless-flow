@@ -6,4 +6,5 @@ __all__ = [
     "sampler",
     "utils",
     "tensor_utils",
+    "metrics"
 ]

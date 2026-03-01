@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTConvOperator
+from lensless_flow.physics import FFTConvOperator, FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -52,7 +52,9 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # -------------------------
     psf = to_nchw(test_ds.psf).to(device)  # [1,C,h,w] or [1,C,H,W]
     H_img, W_img = y.shape[-2], y.shape[-1]
-    Hop = FFTConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
+    Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
+    y_hat = Hop.forward(x)
+    print("rmse:", ((y_hat - y)**2).mean().sqrt().item())
 
     # -------------------------
     # Model
@@ -131,7 +133,7 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
                 clamp_x=True,
                 disable_physics=disable_physics,
                 pred_type=pred_type,
-                dc_mode="luma"
+                dc_mode="rgb"
             )
             recons.append((s, x_hat))
 
