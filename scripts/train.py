@@ -202,6 +202,7 @@ def main(cfg):
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=cfg["train"]["batch_size"],
         num_workers=cfg["data"]["num_workers"],
+        path=cfg["data"].get("path", None),
     )
 
     eval_batches = int(wb.get("eval_batches", 0) or 0)
@@ -447,9 +448,11 @@ def main(cfg):
 
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0:
-            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}.pt"
-            torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
-            print("Saved:", ckpt_path)
+            
+            if cfg["train"]["save_locally"]:
+                ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}.pt"
+                torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
+                print("Saved:", ckpt_path)
 
             if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(

@@ -3,19 +3,21 @@ seed: 123
 device: "cuda"
 
 data:
+  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset"
   split: "train"
   downsample: 4
   flip_ud: false
-  num_workers: 4
+  num_workers: 0
 
 train:
   mode: "vanilla" # "vanilla" or "btb"
   batch_size: 8
   lr: 2.0e-4
-  epochs: 100
+  epochs: 200
   grad_clip: 1.0
   amp: true
   save_every: 1
+  save_locally: true
 
 model:
   base_channels: 64
@@ -63,3 +65,6 @@ sched:
   threshold: 1.0e-4
   cooldown: 0
   min_lr: 1.0e-6
+
+compile:
+  enabled: false

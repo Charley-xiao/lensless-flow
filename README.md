@@ -16,6 +16,9 @@ Dataset:
 
 ## Install
 
+> [!CAUTION]
+> The code does not require Python 3.11 anymore. Python 3.12 also works.
+
 Install Python 3.11 first and then:
 
 ```bash
