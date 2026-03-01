@@ -752,7 +752,7 @@ class DiffuserCamMirflickrHF(DualDataset):
         return lensless, lensed
 
 
-def make_dataloader(split: str, downsample: int, flip_ud: bool, batch_size: int, num_workers: int, path: str = None):
+def make_dataloader(split: str, downsample: int, flip_ud: bool, batch_size: int, num_workers: int, path: str = "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset"):
     ds = DiffuserCamMirflickrHF(split=split, downsample=downsample, flip_ud=flip_ud, repo_id=path)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=(split == "train"),
                     num_workers=num_workers, pin_memory=True, drop_last=(split == "train"), 

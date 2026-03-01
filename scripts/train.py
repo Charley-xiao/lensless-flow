@@ -215,6 +215,7 @@ def main(cfg):
             flip_ud=cfg["data"]["flip_ud"],
             batch_size=1,
             num_workers=0,
+            path=cfg["data"].get("path", None),
         )
 
     # -------------------------
