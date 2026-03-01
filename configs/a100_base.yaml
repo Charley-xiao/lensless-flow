@@ -17,7 +17,8 @@ train:
   epochs: 200
   grad_clip: 1.0
   amp: true
-  save_every: 1
+  save_every: 3
+  save_since_epoch: 100
   save_locally: false
 
 model:

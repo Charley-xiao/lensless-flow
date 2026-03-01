@@ -447,10 +447,10 @@ def main(cfg):
             )
 
         # checkpoint
-        if epoch % cfg["train"]["save_every"] == 0:
-            
+        if epoch % cfg["train"]["save_every"] == 0 and epoch >= cfg["train"]["save_since_epoch"]:
+            ssim = eval_metrics.get("eval/ssim", 0.0)
             if cfg["train"]["save_locally"]:
-                ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}.pt"
+                ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}_ssim{ssim:.4f}.pt"
                 torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
                 print("Saved:", ckpt_path)
 
@@ -458,7 +458,11 @@ def main(cfg):
                 artifact = wandb.Artifact(
                     name=f"cfm_lensless_{pred_type}",
                     type="model",
-                    metadata={"epoch": epoch, "C": C, "H": H_img, "W": W_img, "mode": pred_type, "denom_min": denom_min},
+                    metadata={
+                        "epoch": epoch, 
+                        "C": C, "H": H_img, "W": W_img, 
+                        "mode": pred_type, "denom_min": denom_min,
+                    },
                 )
                 artifact.add_file(ckpt_path)
                 wandb.log_artifact(artifact, aliases=[f"epoch_{epoch}", "latest"])
