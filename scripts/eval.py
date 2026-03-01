@@ -1,5 +1,3 @@
-# scripts/eval.py  (DROP-IN REPLACEMENT, latest API + PSNR/SSIM + DC-RMSE)
-
 import argparse
 import yaml
 from tqdm import tqdm
@@ -18,16 +16,10 @@ from lensless_flow.metrics import psnr, ssim_torch
 def main(cfg, ckpt: str, max_batches: int | None):
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
-    # -------------------------
-    # Mode / pred_type (must match training)
-    # -------------------------
     state = torch.load(ckpt, map_location=device)
     pred_type = str(state.get("mode", cfg.get("train", {}).get("mode", "btb"))).lower()
     assert pred_type in ["btb", "vanilla"], f"Unknown pred_type={pred_type}"
 
-    # -------------------------
-    # Data
-    # -------------------------
     test_ds, test_dl = make_dataloader(
         split="test",
         downsample=cfg["data"]["downsample"],
@@ -42,17 +34,9 @@ def main(cfg, ckpt: str, max_batches: int | None):
     C = y0.shape[1]
     H_img, W_img = y0.shape[-2], y0.shape[-1]
 
-    # -------------------------
-    # PSF + operator (NCHW)
-    # -------------------------
     psf = to_nchw(test_ds.psf).to(device)
-
-    # If you have switched to linear convolution operator, replace FFTConvOperator accordingly:
     Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
-    # -------------------------
-    # Model
-    # -------------------------
     model = SimpleCondUNet(
         img_channels=C,
         base_ch=cfg["model"]["base_channels"],
@@ -63,9 +47,6 @@ def main(cfg, ckpt: str, max_batches: int | None):
     model.load_state_dict(state["model"])
     model.eval()
 
-    # -------------------------
-    # Sampling params
-    # -------------------------
     steps = int(cfg["sample"]["steps"])
     init_noise_std = float(cfg["sample"]["init_noise_std"])
 
@@ -76,9 +57,6 @@ def main(cfg, ckpt: str, max_batches: int | None):
     dc_step = float(cfg.get("physics", {}).get("dc_step_size", 0.0))
     dc_mode = "rgb"
 
-    # -------------------------
-    # Loop
-    # -------------------------
     psnr_list = []
     ssim_list = []
     dc_rmse_list = []

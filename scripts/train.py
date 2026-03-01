@@ -11,7 +11,7 @@ import wandb
 
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTConvOperator
+from lensless_flow.physics import FFTConvOperator, FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.flow_matching import sample_t, cfm_forward
 from lensless_flow.losses import cfm_loss, physics_loss_from_v
@@ -164,7 +164,7 @@ def main(cfg):
     x0 = to_nchw(x0)
     C = y0.shape[1]
     H_img, W_img = y0.shape[-2], y0.shape[-1]
-    Hop = FFTConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
+    Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
     # -------------------------
     # Model

@@ -39,6 +39,7 @@ class FFTConvOperator(nn.Module):
     x: [B,C,H,W]
     """
     def __init__(self, psf: torch.Tensor, im_hw: tuple[int, int]):
+        raise NotImplementedError("This operator is mathematically correct for circular convolution, but may not match the physical forward model well. Consider using FFTLinearConvOperator instead.")
         super().__init__()
         otf = psf_to_otf(psf, im_hw)
         self.register_buffer("otf", otf)
