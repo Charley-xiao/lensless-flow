@@ -452,10 +452,9 @@ def main(cfg):
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
             ssim = eval_metrics.get("eval/ssim", 0.0)
-            if cfg["train"]["save_locally"]:
-                ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}_ssim{ssim:.4f}.pt"
-                torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
-                print("Saved:", ckpt_path)
+            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}_ssim{ssim:.4f}.pt"
+            torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
+            print("Saved:", ckpt_path)
 
             if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(

@@ -37,7 +37,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 export HF_TOKEN=<...>
 hf download bezzam/DiffuserCam-Lensless-Mirflickr-Dataset --repo-type dataset --local-dir <...>
 # Then go to configs/a100_base.yaml and set data.path to the local path of the downloaded dataset,
-# and set train.save_locally to true, wandb.log_artifacts to false.
+# and set wandb.log_artifacts to false.
 wandb login --relogin
 wandb offline
 ```

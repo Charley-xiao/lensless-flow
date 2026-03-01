@@ -19,7 +19,6 @@ train:
   amp: true
   save_every: 3
   save_since_epoch: 0.5
-  save_locally: false
 
 model:
   base_channels: 64
