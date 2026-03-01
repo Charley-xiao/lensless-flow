@@ -28,35 +28,12 @@ def to_imshow(x_bchw: torch.Tensor):
     return x.permute(1, 2, 0).numpy()
 
 
-def _call_sampler(model, y, Hop, steps, cfg):
-    """
-    Call sample_with_physics_guidance in a way that stays compatible with
-    whether your sampler supports disable_physics or not.
-    """
-    kwargs = dict(
-        model=model,
-        y=y,
-        H=Hop,
-        steps=int(steps),
-        dc_step=cfg["physics"]["dc_step_size"],
-        dc_steps=cfg["physics"]["dc_steps"],
-        init_noise_std=cfg["sample"]["init_noise_std"],
-    )
-
-    # If your sampler has disable_physics (you added it earlier), pass it.
-    # Otherwise, just call without it.
-    try:
-        return sample_with_physics_guidance(
-            **kwargs,
-            disable_physics=False if cfg["cfm"]["loss"]["physics_weight"] > 0 else True,
-        )
-    except TypeError:
-        return sample_with_physics_guidance(**kwargs)
-
-
-def main(cfg, idx: int, ckpt: str, steps_list, cols: int):
+def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disable_physics_override: str | None):
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
+    # -------------------------
+    # Load dataset (test)
+    # -------------------------
     test_ds, _ = make_dataloader(
         split="test",
         downsample=cfg["data"]["downsample"],
@@ -70,11 +47,16 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int):
     y = to_nchw(y).to(device)  # [1,C,H,W]
     x = to_nchw(x).to(device)
 
-    # PSF + operator (NCHW)
-    psf = to_nchw(test_ds.psf).to(device)
+    # -------------------------
+    # PSF + operator
+    # -------------------------
+    psf = to_nchw(test_ds.psf).to(device)  # [1,C,h,w] or [1,C,H,W]
     H_img, W_img = y.shape[-2], y.shape[-1]
     Hop = FFTConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
+    # -------------------------
+    # Model
+    # -------------------------
     C = y.shape[1]
     model = SimpleCondUNet(
         img_channels=C,
@@ -83,25 +65,94 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int):
         num_res_blocks=cfg["model"]["num_res_blocks"],
     ).to(device)
 
+    # -------------------------
+    # Load checkpoint + decide pred_type
+    # -------------------------
     state = torch.load(ckpt, map_location=device)
     model.load_state_dict(state["model"])
     model.eval()
 
-    # Generate reconstructions for each step count
+    pred_type = str(state.get("mode", cfg.get("train", {}).get("mode", "btb"))).lower()
+    if pred_type not in ["btb", "vanilla"]:
+        raise ValueError(f"Unknown pred_type/mode in ckpt/cfg: {pred_type}")
+    print(f"[sample.py] Using pred_type={pred_type} (ckpt.mode={state.get('mode', None)}, cfg.train.mode={cfg.get('train', {}).get('mode', None)})")
+
+    # -------------------------
+    # Sampling settings
+    # -------------------------
+    denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
+    init_noise_std = float(cfg.get("sample", {}).get("init_noise_std", 1.0))
+
+    # Decide physics usage for sampling
+    # Default: follow cfg.physics.disable_in_eval
+    disable_physics = bool(cfg.get("physics", {}).get("disable_in_eval", False))
+    if disable_physics_override is not None:
+        s = disable_physics_override.strip().lower()
+        if s in ["1", "true", "yes", "y", "on"]:
+            disable_physics = True
+        elif s in ["0", "false", "no", "n", "off"]:
+            disable_physics = False
+        else:
+            raise ValueError("--disable_physics must be true/false (or 1/0)")
+
+    dc_steps = int(cfg.get("physics", {}).get("dc_steps", 0))
+    dc_step = float(cfg.get("physics", {}).get("dc_step_size", 0.0))
+
+    print(f"[sample.py] disable_physics={disable_physics}, dc_steps={dc_steps}, dc_step={dc_step} (<=0 => auto if enabled)")
+
+    # Fix randomness for fair step-count comparison (optional)
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    # -------------------------
+    # Run sampling for each step count
+    # -------------------------
     recons = []
     with torch.no_grad():
         for s in steps_list:
-            x_hat = _call_sampler(model, y, Hop, steps=s, cfg=cfg)
+            # Use the SAME initial noise for each step-count if seed is set:
+            # reset RNG to keep initial z identical across runs (apples-to-apples)
+            if seed is not None:
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
+
+            x_hat = sample_with_physics_guidance(
+                model=model,
+                y=y,
+                H=Hop,
+                steps=int(s),
+                dc_step=dc_step,
+                dc_steps=dc_steps,
+                init_noise_std=init_noise_std,
+                denom_min=denom_min,
+                clamp_x=True,
+                disable_physics=disable_physics,
+                pred_type=pred_type,
+                dc_mode="luma"
+            )
             recons.append((s, x_hat))
 
-    # --- Plot: first row shows y and GT; rest is recon grid ---
+    # -------------------------
+    # Plot grid
+    # -------------------------
     ensure_dir(cfg["sample"]["save_dir"])
-    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}.png")
+    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}_{pred_type}.png")
 
     n = len(recons)
     rows = ceil((n + 2) / cols)  # +2 for y and GT
     fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
-    axs = axs.reshape(rows, cols)
+    # handle edge case rows/cols==1
+    if rows == 1 and cols == 1:
+        axs = [[axs]]
+    elif rows == 1:
+        axs = [axs]
+    elif cols == 1:
+        axs = [[a] for a in axs]
+    else:
+        axs = axs.reshape(rows, cols)
 
     def put(ax, img, title):
         ax.imshow(img, cmap="gray" if (img.ndim == 2) else None)
@@ -109,27 +160,29 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int):
         ax.axis("off")
 
     # Slot 0: measurement y
-    put(axs[0, 0], to_imshow(y), "Lensless y")
+    put(axs[0][0], to_imshow(y), "Lensless y")
     # Slot 1: GT x
     if cols > 1:
-        put(axs[0, 1], to_imshow(x), "GT x")
+        put(axs[0][1], to_imshow(x), "GT x")
     else:
-        # if cols==1, move GT to next row
-        put(axs[1, 0], to_imshow(x), "GT x")
+        put(axs[1][0], to_imshow(x), "GT x")
 
     # Fill remaining slots with reconstructions
     slot = 2
     for s, x_hat in recons:
         r = slot // cols
         c = slot % cols
-        put(axs[r, c], to_imshow(x_hat), f"CFM{' +Phys' if cfg['cfm']['loss']['physics_weight']>0 else ''} | steps={s}")
+        title = f"CFM ({pred_type}) | steps={s}"
+        if not disable_physics and dc_steps > 0:
+            title += f" | DC={dc_steps}"
+        put(axs[r][c], to_imshow(x_hat), title)
         slot += 1
 
-    # Turn off any leftover axes
+    # Turn off leftover axes
     for k in range(slot, rows * cols):
         r = k // cols
         c = k % cols
-        axs[r, c].axis("off")
+        axs[r][c].axis("off")
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
@@ -142,16 +195,35 @@ if __name__ == "__main__":
     ap.add_argument("--idx", type=int, default=0)
     ap.add_argument("--ckpt", type=str, required=True)
 
-    # Comma-separated list of step counts to compare
-    ap.add_argument("--steps", type=str, default="5,10,15,20,30,50",
-                    help="Comma-separated step counts, e.g. 5,10,20,50")
-
-    # Grid layout
+    ap.add_argument(
+        "--steps",
+        type=str,
+        default="5,10,15,20,30,50",
+        help="Comma-separated step counts, e.g. 5,10,20,50",
+    )
     ap.add_argument("--cols", type=int, default=4, help="Number of columns in the output grid")
+
+    # Reproducibility / control switches
+    ap.add_argument("--seed", type=int, default=0, help="Fix RNG seed for sampling (same initial noise across step counts)")
+    ap.add_argument(
+        "--disable_physics",
+        type=str,
+        default=None,
+        help="Override cfg.physics.disable_in_eval. Use true/false (or 1/0).",
+    )
+
     args = ap.parse_args()
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
     steps_list = [int(s.strip()) for s in args.steps.split(",") if s.strip()]
-    main(cfg, idx=args.idx, ckpt=args.ckpt, steps_list=steps_list, cols=args.cols)
+    main(
+        cfg,
+        idx=args.idx,
+        ckpt=args.ckpt,
+        steps_list=steps_list,
+        cols=args.cols,
+        seed=args.seed,
+        disable_physics_override=args.disable_physics,
+    )

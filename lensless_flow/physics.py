@@ -42,6 +42,7 @@ class FFTConvOperator(nn.Module):
         super().__init__()
         otf = psf_to_otf(psf, im_hw)
         self.register_buffer("otf", otf)
+        self.dc_safety = 0.1  # optional safety factor for suggested DC step size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         X = torch.fft.fft2(x)
