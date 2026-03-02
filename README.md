@@ -63,3 +63,11 @@ python -m scripts.test_psf_alignment --config configs/base.yaml --idx 0 --save_d
 python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_epoch10.pt --idx 0 --steps 5,10,20,30,50 --cols 4
 python -m scripts.eval --config configs/base.yaml --ckpt ...
 ```
+
+## Experiments
+
+1. Train vanilla v-prediction CFM and x-prediction CFM, sample with and without physics guidance, report SSIM, PSNR, and RMSE metrics.
+2. Compare with baselines such as ADMM and supervised U-Net.
+3. Visualize SSIM vs number of sampling steps for with and without physics guidance, for both v-prediction and x-prediction models.
+4. Visualize the effect of the physics guidance by plotting the intermediate reconstructions at different sampling steps, with and without guidance.
+5. Ablation: vary the number of steps of the physics guidance and see how it affects the reconstruction quality.

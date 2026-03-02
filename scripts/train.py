@@ -175,6 +175,7 @@ def main(cfg):
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
     ).to(device)
+    print("Model params:", sum(p.numel() for p in model.parameters()))
     if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
         model = torch.compile(model, mode="max-autotune")
 
