@@ -11,7 +11,7 @@ import wandb
 
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTConvOperator, FFTLinearConvOperator
+from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.flow_matching import sample_t, cfm_forward
 from lensless_flow.losses import cfm_loss, physics_loss_from_v

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTConvOperator, FFTLinearConvOperator
+from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
