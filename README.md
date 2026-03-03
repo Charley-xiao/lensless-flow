@@ -75,3 +75,8 @@ python -m scripts.eval --config configs/base.yaml --ckpt ...
 3. Visualize SSIM vs number of sampling steps for with and without physics guidance, for both v-prediction and x-prediction models.
 4. Visualize the effect of the physics guidance by plotting the intermediate reconstructions at different sampling steps, with and without guidance.
 5. Ablation: vary the number of steps of the physics guidance and see how it affects the reconstruction quality.
+
+```bash
+python -m rqs.ssim_vs_k --config configs/a100_base.yaml --ckpt_vanilla checkpoints/vanilla.pt --ckpt_btb checkpoints/btb.pt --steps 1,5,10,20,30,40,50,60 --max_batches -1 --out outputs/ssim_vs_k.png
+python -m rqs.ssim_vs_dc --config configs/a100_base.yaml --ckpt_vanilla checkpoints/vanilla.pt --steps 40 --dc_steps 0,1,2,3,5,8,10 --max_batches -1 --out outputs/ssim_vs_dcsteps.png
+```

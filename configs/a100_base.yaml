@@ -11,7 +11,7 @@ data:
   num_workers: 10
 
 train:
-  mode: "btb" # "vanilla" or "btb"
+  mode: "vanilla" # "vanilla" or "btb"
   batch_size: 128
   lr: 2.0e-4
   epochs: 200

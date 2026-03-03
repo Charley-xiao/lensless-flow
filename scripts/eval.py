@@ -61,6 +61,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
     psnr_list = []
     ssim_list = []
     dc_rmse_list = []
+    mse_list = []
 
     pbar = tqdm(test_dl, desc=f"eval ({pred_type}, steps={steps}, DC={'off' if disable_physics else dc_mode})")
     for i, (y, x) in enumerate(pbar):
@@ -89,6 +90,8 @@ def main(cfg, ckpt: str, max_batches: int | None):
         x_hat_c = x_hat.clamp(0, 1)
         x_c = x.clamp(0, 1)
 
+        mse = float((x_hat_c.float() - x_c.float()).pow(2).mean().item())
+
         p = float(psnr(x_hat_c, x_c))
         s = float(ssim_torch(x_hat_c, x_c))
 
@@ -98,8 +101,9 @@ def main(cfg, ckpt: str, max_batches: int | None):
         psnr_list.append(p)
         ssim_list.append(s)
         dc_rmse_list.append(dc_rmse)
+        mse_list.append(mse)
 
-        pbar.set_postfix(psnr=f"{p:.2f}", ssim=f"{s:.4f}", dc_rmse=f"{dc_rmse:.4f}")
+        pbar.set_postfix(psnr=f"{p:.2f}", ssim=f"{s:.4f}", dc_rmse=f"{dc_rmse:.4f}", mse=f"{mse:.6f}")
 
     n = max(1, len(psnr_list))
     print("\n========== Eval Summary ==========")
@@ -110,6 +114,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
     print("----------------------------------")
     print(f"PSNR avg: {sum(psnr_list)/n:.3f}")
     print(f"SSIM avg: {sum(ssim_list)/n:.6f}")
+    print(f"MSE avg: {sum(mse_list)/n:.8f}")  # NEW
     print(f"Data-consistency RMSE avg: {sum(dc_rmse_list)/n:.6f}")
     print("==================================\n")
 
