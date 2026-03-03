@@ -16,12 +16,6 @@ Testing set size: 999
 
 Param count: 14M
 
-> [!CAUTION]
-> There's still something wrong with the PSF guidance. Need to revise the math and implementation.
-> For the time being, set physics.dc_steps to 0 to disable the data-consistency steps during sampling.
-
-**Update: data consistency step is now correct if you use FFTLinearConvOperator instead of FFTConvOperator.**
-
 ## Install
 
 > [!CAUTION]
@@ -57,10 +51,6 @@ wandb offline
 python -m scripts.train --config configs/base.yaml
 # On Google Colab, use the A100 config:
 python -m scripts.train --config configs/a100_base.yaml
-```
-
-```bash
-python -m scripts.test_psf_alignment --config configs/base.yaml --idx 0 --save_dir debug_psf
 ```
 
 ## Sample / Visualize
