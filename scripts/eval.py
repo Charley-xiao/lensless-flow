@@ -24,7 +24,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
         split="test",
         downsample=cfg["data"]["downsample"],
         flip_ud=cfg["data"]["flip_ud"],
-        batch_size=1,
+        batch_size=8,
         num_workers=0,
         path=cfg["data"].get("path", None),
     )

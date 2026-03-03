@@ -14,6 +14,8 @@ Image shape: torch.Size([1, 3, 67, 120])
 Training set size: 24000
 Testing set size: 999
 
+Param count: 14M
+
 > [!CAUTION]
 > There's still something wrong with the PSF guidance. Need to revise the math and implementation.
 > For the time being, set physics.dc_steps to 0 to disable the data-consistency steps during sampling.
@@ -78,5 +80,16 @@ python -m scripts.eval --config configs/base.yaml --ckpt ...
 
 ```bash
 python -m rqs.ssim_vs_k --config configs/a100_base.yaml --ckpt_vanilla checkpoints/vanilla.pt --ckpt_btb checkpoints/btb.pt --steps 1,5,10,20,30,40,50,60 --max_batches -1 --out outputs/ssim_vs_k.png
-python -m rqs.ssim_vs_dc --config configs/a100_base.yaml --ckpt_vanilla checkpoints/vanilla.pt --steps 40 --dc_steps 0,1,2,3,5,8,10 --max_batches -1 --out outputs/ssim_vs_dcsteps.png
+python -m rqs.ssim_vs_dc --config configs/a100_base.yaml --ckpt checkpoints/vanilla.pt --steps 40 --dc_steps 0,1,2,3,5,8,10 --max_batches -1 --out outputs/ssim_vs_dcsteps.png
+```
+
+```
+   1  V_off=0.056797  V_on=0.056797  B_off=0.062834  B_on=0.062595
+   5  V_off=0.354060  V_on=0.354649  B_off=0.341806  B_on=0.341521
+  10  V_off=0.539874  V_on=0.534933  B_off=0.488173  B_on=0.487254
+  20  V_off=0.709512  V_on=0.705812  B_off=0.578574  B_on=0.578247
+  30  V_off=0.770059  V_on=0.765754  B_off=0.783751  B_on=0.781745
+  40  V_off=0.794702  V_on=0.789456  B_off=0.809604  B_on=0.807175
+  50  V_off=0.806247  V_on=0.800135  B_off=0.828759  B_on=0.826137
+  60  V_off=0.811477  V_on=0.804530  B_off=0.836306  B_on=0.832553
 ```
