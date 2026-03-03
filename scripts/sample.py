@@ -40,6 +40,7 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=1,
         num_workers=0,
+        path=cfg["data"].get("path", None),
     )
 
     # Load one sample and convert to NCHW

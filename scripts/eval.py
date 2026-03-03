@@ -26,6 +26,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=1,
         num_workers=0,
+        path=cfg["data"].get("path", None),
     )
 
     # Determine C,H,W from one sample (after converting to NCHW)
@@ -78,7 +79,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
             dc_steps=dc_steps,
             init_noise_std=init_noise_std,
             denom_min=denom_min,
-            clamp_x=True,
+            clamp_x=False,
             disable_physics=disable_physics,
             pred_type=pred_type,
             dc_mode=dc_mode,
