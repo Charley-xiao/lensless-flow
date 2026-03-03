@@ -10,6 +10,10 @@ Key pieces:
 Dataset:
 - DiffuserCam MirFlickr (via LenslessPiCam HuggingFace loader)
 
+Image shape: torch.Size([1, 3, 67, 120])
+Training set size: 24000
+Testing set size: 999
+
 > [!CAUTION]
 > There's still something wrong with the PSF guidance. Need to revise the math and implementation.
 > For the time being, set physics.dc_steps to 0 to disable the data-consistency steps during sampling.

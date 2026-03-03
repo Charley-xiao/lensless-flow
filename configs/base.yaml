@@ -61,10 +61,10 @@ sched:
   metric: "eval/ssim"
   mode: "max"
   factor: 0.5
-  patience: 5
+  patience: 10
   threshold: 1.0e-4
   cooldown: 0
-  min_lr: 1.0e-6
+  min_lr: 2.0e-5
 
 compile:
   enabled: false
