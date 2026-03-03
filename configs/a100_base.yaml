@@ -11,12 +11,12 @@ data:
   num_workers: 10
 
 train:
-  mode: "vanilla" # "vanilla" or "btb"
+  mode: "btb" # "vanilla" or "btb"
   batch_size: 128
   lr: 2.0e-4
   epochs: 200
   grad_clip: 1.0
-  amp: true
+  amp: false
   save_every: 3
   save_since_epoch: 0.5
 
