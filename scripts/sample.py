@@ -130,7 +130,7 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
                 dc_steps=dc_steps,
                 init_noise_std=init_noise_std,
                 denom_min=denom_min,
-                clamp_x=True,
+                clamp_x=False,
                 disable_physics=disable_physics,
                 pred_type=pred_type,
                 dc_mode="rgb"

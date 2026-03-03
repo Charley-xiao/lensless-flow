@@ -68,7 +68,7 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
             dc_steps=cfg["physics"]["dc_steps"],
             init_noise_std=cfg["sample"]["init_noise_std"],
             denom_min=denom_min,
-            clamp_x=True,
+            clamp_x=False,
             disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
             pred_type=pred_type,
         )
@@ -374,7 +374,7 @@ def main(cfg):
                 dc_steps=cfg["physics"]["dc_steps"],
                 init_noise_std=cfg["sample"]["init_noise_std"],
                 denom_min=denom_min,
-                clamp_x=True,
+                clamp_x=False,
                 disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
                 pred_type=pred_type,
             )

@@ -3,7 +3,7 @@ seed: 123
 device: "cuda"
 
 data:
-  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset"
+  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset-NORM"
   split: "train"
   downsample: 4
   flip_ud: false
@@ -20,8 +20,8 @@ train:
   save_since_epoch: 0.5
 
 model:
-  base_channels: 64
-  channel_mults: [1, 2, 4]
+  base_channels: 32
+  channel_mults: [1, 2, 4, 8]
   num_res_blocks: 2
 
 cfm:
