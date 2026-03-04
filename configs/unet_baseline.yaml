@@ -1,0 +1,33 @@
+seed: 0
+device: cuda
+
+data:
+  downsample: 4
+  flip_ud: false
+  num_workers: 8
+  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset-NORM"
+
+model:
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 2
+
+train:
+  epochs: 50
+  batch_size: 64
+  lr: 0.0002
+  amp: false
+  loss: mse
+  save_dir: checkpoints
+  save_every: 5
+  eval_every: 5
+  eval_batches: 0  # 0 = full test set
+
+compile:
+  enabled: false
+
+wandb:
+  enabled: true
+  project: lensless-flow
+  name: unet_baseline
+  log_every: 50

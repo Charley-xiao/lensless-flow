@@ -25,7 +25,9 @@ def to_imshow(x_bchw: torch.Tensor):
     x = x / (x.max() + 1e-8)
     if x.shape[0] == 1:
         return x[0].numpy()
-    return x.permute(1, 2, 0).numpy()
+    x = x.permute(1, 2, 0).numpy()
+    # rotate 180 degrees for better visualization (optional, depending on dataset)
+    return x[::-1, ::-1]
 
 
 def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disable_physics_override: str | None):
@@ -142,10 +144,11 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # Plot grid
     # -------------------------
     ensure_dir(cfg["sample"]["save_dir"])
-    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}_{pred_type}.png")
+    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}_{pred_type}.pdf")
 
     n = len(recons)
-    rows = ceil((n + 2) / cols)  # +2 for y and GT
+    # rows = ceil((n + 2) / cols)  # +2 for y and GT
+    rows = ceil(n / cols)  # just recons
     fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
     # handle edge case rows/cols==1
     if rows == 1 and cols == 1:
@@ -163,15 +166,16 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
         ax.axis("off")
 
     # Slot 0: measurement y
-    put(axs[0][0], to_imshow(y), "Lensless y")
-    # Slot 1: GT x
-    if cols > 1:
-        put(axs[0][1], to_imshow(x), "GT x")
-    else:
-        put(axs[1][0], to_imshow(x), "GT x")
+    # put(axs[0][0], to_imshow(y), "Lensless y")
+    # # Slot 1: GT x
+    # if cols > 1:
+    #     put(axs[0][1], to_imshow(x), "GT x")
+    # else:
+    #     put(axs[1][0], to_imshow(x), "GT x")
 
     # Fill remaining slots with reconstructions
-    slot = 2
+    slot = 0
+    pred_type = "v-pred" if pred_type == "vanilla" else "x-pred"
     for s, x_hat in recons:
         r = slot // cols
         c = slot % cols
