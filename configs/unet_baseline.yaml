@@ -8,7 +8,7 @@ data:
   path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset-NORM"
 
 model:
-  base_channels: 64
+  base_channels: 32
   channel_mults: [1, 2, 4, 8]
   num_res_blocks: 2
 
