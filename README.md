@@ -69,3 +69,13 @@ python -m scripts.eval --config configs/base.yaml --ckpt ...
 ## Checkpoints
 
 See [Releases](https://github.com/Charley-xiao/lensless-flow/releases)
+
+## License
+
+This repository is licensed under the GNU Affero General Public License v3.0
+because `lensless_flow/data.py` includes and modifies code derived from the LenslessPiCam project.
+
+Upstream project:
+- LenslessPiCam — https://github.com/LCAV/LenslessPiCam
+
+See `LICENSE` and `THIRD_PARTY_NOTICES.md` for details.

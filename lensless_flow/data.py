@@ -1,3 +1,34 @@
+# This file includes code derived from LenslessPiCam:
+# https://github.com/LCAV/LenslessPiCam
+#
+# Original upstream files include:
+# - lensless/utils/dataset.py
+# - lensless/utils/io.py
+#
+# Upstream authors include:
+# - Yohann Perron
+# - Eric Bezzam
+#
+# Modifications in this repository:
+# - extracted only the portions needed for this project
+# - adapted code layout for this repository
+# - modified for Python 3.12 compatibility
+# - removed unrelated functionality and dependencies
+#
+# Modified: 2026-03-12
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset
@@ -10,7 +41,6 @@ import torchvision.transforms as tf
 from waveprop.noise import add_shot_noise
 import os
 import warnings
-# from lensless.utils.dataset import DiffuserCamMirflickrHF
 
 torch_available = True
 RPI_HQ_CAMERA_CCM_MATRIX = np.array(
