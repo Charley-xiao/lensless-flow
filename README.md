@@ -21,7 +21,9 @@ Our contributions:
 - We compare two practical parameterizations, velocity prediction and image prediction with induced velocity.
 - We analyze the inference-time trade-offs, including ODE step budget and the incremental effect of optional physics guidance.
 
-**Report coming soon!**
+**Report available** [here](https://github.com/Charley-xiao/lensless-flow/tree/master/public/EECS_298_Report.pdf).
+
+**Presentation slides** available [here](https://github.com/Charley-xiao/lensless-flow/tree/master/public/EECS_298_Presentation.pdf).
 
 ## Install
 
