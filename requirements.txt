@@ -4,6 +4,8 @@ numpy
 pyyaml
 tqdm
 matplotlib
+scipy
+scikit-learn
 # lensless
 # git+https://github.com/ebezzam/slm-controller.git
 waveprop

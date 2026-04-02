@@ -4,6 +4,8 @@
 
 ![](public/steps.png)
 
+![](public/pca_kde_distribution_train_n24000.png)
+
 Final Project for EECS 298: Computational Optics, Winter 2026, UC Irvine.
 
 This project trains a Conditional Flow Matching (CFM) model to map lensless measurements (y) to lensed images (x),
@@ -74,6 +76,7 @@ cfm:
 ```bash
 python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_vanilla_rectified_epoch10_ssim0.7000.pt --idx 0 --steps 5,10,20,30,50 --cols 4
 python -m scripts.eval --config configs/base.yaml --ckpt ...
+python -m scripts.visualize_distribution --config configs/base.yaml --split train --max_samples 1000
 ```
 
 ## Checkpoints
