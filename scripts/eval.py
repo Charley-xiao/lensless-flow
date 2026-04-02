@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch
 
 from lensless_flow.data import make_dataloader
+from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.sampler import sample_with_physics_guidance
@@ -19,6 +20,9 @@ def main(cfg, ckpt: str, max_batches: int | None):
     state = torch.load(ckpt, map_location=device)
     pred_type = str(state.get("mode", cfg.get("train", {}).get("mode", "btb"))).lower()
     assert pred_type in ["btb", "vanilla"], f"Unknown pred_type={pred_type}"
+    flow_matcher_name = normalize_flow_matcher_name(
+        state.get("matcher", cfg.get("cfm", {}).get("matcher", "rectified"))
+    )
 
     test_ds, test_dl = make_dataloader(
         split="test",
@@ -63,7 +67,10 @@ def main(cfg, ckpt: str, max_batches: int | None):
     dc_rmse_list = []
     mse_list = []
 
-    pbar = tqdm(test_dl, desc=f"eval ({pred_type}, steps={steps}, DC={'off' if disable_physics else dc_mode})")
+    pbar = tqdm(
+        test_dl,
+        desc=f"eval ({pred_type}, {flow_matcher_name}, steps={steps}, DC={'off' if disable_physics else dc_mode})",
+    )
     for i, (y, x) in enumerate(pbar):
         if (max_batches is not None) and (i >= max_batches):
             break
@@ -109,6 +116,7 @@ def main(cfg, ckpt: str, max_batches: int | None):
     print("\n========== Eval Summary ==========")
     print(f"ckpt: {ckpt}")
     print(f"pred_type: {pred_type}")
+    print(f"matcher: {flow_matcher_name}")
     print(f"steps: {steps}")
     print(f"DC: {'disabled' if disable_physics else (dc_mode + f' (dc_steps={dc_steps}, dc_step={dc_step})')}")
     print("----------------------------------")

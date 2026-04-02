@@ -11,3 +11,4 @@ waveprop
 datasets
 wandb
 huggingface_hub
+torchcfm

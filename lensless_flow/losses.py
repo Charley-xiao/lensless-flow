@@ -7,8 +7,10 @@ def cfm_loss(v_pred, v_star):
 
 def physics_loss_from_v(x_t, v_pred, t, y_meas, H):
     """
-    Predict x0 from (x_t, v_pred) then penalize measurement residual ||H x0 - y||^2.
-    This is a *training-time* physics regularizer that complements test-time guidance.
+    Predict the target image from (x_t, v_pred) and penalize ||H x_hat - y||^2.
+
+    This assumes the deterministic straight-line path used by both the
+    rectified-flow and OT-CFM matchers wired into this project.
     """
     x0_hat = x0_from_xt_v(x_t, v_pred, t)
     resid = H.forward(x0_hat) - y_meas

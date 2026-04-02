@@ -11,6 +11,7 @@ and uses physics-guided sampling with a known PSF forward model H to enforce dat
 
 Key pieces:
 - CFM training: learn $v_\theta(t, x_t, y)$ where $x_t = (1-t)\epsilon + t x$
+- Flow-matcher backends: choose between rectified flow (`cfm.matcher: rectified`) and OT-CFM (`cfm.matcher: ot_cfm`) via TorchCFM
 - Sampling: integrate ODE with Euler steps + data-consistency gradient step using $H^T(Hx - y)$
 
 Dataset:
@@ -34,6 +35,8 @@ Install Python 3.12 first and then:
 ```bash
 pip install -r requirements.txt
 ```
+
+`requirements.txt` now includes [`torchcfm`](https://github.com/atong01/conditional-flow-matching), which provides the rectified-flow and OT-CFM matchers used by the training core.
 
 ### On a cluster
 
@@ -59,10 +62,17 @@ python -m scripts.train --config configs/base.yaml
 python -m scripts.train --config configs/a100_base.yaml
 ```
 
+Switch between the default rectified-flow training objective and OT-CFM by editing:
+
+```yaml
+cfm:
+  matcher: "rectified"  # or "ot_cfm"
+```
+
 ## Sample / Visualize
 
 ```bash
-python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_epoch10.pt --idx 0 --steps 5,10,20,30,50 --cols 4
+python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_vanilla_rectified_epoch10_ssim0.7000.pt --idx 0 --steps 5,10,20,30,50 --cols 4
 python -m scripts.eval --config configs/base.yaml --ckpt ...
 ```
 

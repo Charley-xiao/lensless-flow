@@ -13,7 +13,12 @@ from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
-from lensless_flow.flow_matching import sample_t, cfm_forward
+from lensless_flow.flow_matching import (
+    build_flow_matcher,
+    normalize_flow_matcher_name,
+    sample_flow_matching_training_batch,
+    sample_t,
+)
 from lensless_flow.losses import cfm_loss, physics_loss_from_v
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
@@ -115,6 +120,8 @@ def main(cfg):
     train_mode = str(cfg.get("train", {}).get("mode", "btb")).lower()
     assert train_mode in ["btb", "vanilla"], f"cfg.train.mode must be 'btb' or 'vanilla', got {train_mode}"
     pred_type = train_mode
+    flow_matcher_name = normalize_flow_matcher_name(cfg.get("cfm", {}).get("matcher", "rectified"))
+    flow_matcher = build_flow_matcher(flow_matcher_name)
 
     # -------------------------
     # W&B init
@@ -122,11 +129,15 @@ def main(cfg):
     wb = cfg.get("wandb", {})
     use_wandb = bool(wb.get("enabled", True))
     if use_wandb:
+        wb_tags = list(wb.get("tags", []))
+        for tag in [pred_type, flow_matcher_name, "cfm", "lensless"]:
+            if tag not in wb_tags:
+                wb_tags.append(tag)
         wandb.init(
             project=wb.get("project", "lensless-flow"),
             entity=wb.get("entity", None),
             name=wb.get("name", None),
-            tags=wb.get("tags", [pred_type, "cfm", "lensless"]),
+            tags=wb_tags,
             config=cfg,
         )
 
@@ -213,7 +224,7 @@ def main(cfg):
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
-        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type})")
+        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type}, {flow_matcher_name})")
 
         sum_loss = 0.0
         sum_loss_v = 0.0
@@ -227,17 +238,22 @@ def main(cfg):
             b = x.shape[0]
             t = sample_t(b, cfg["cfm"]["t_min"], cfg["cfm"]["t_max"], device)
 
-            x_t, v_star, _ = cfm_forward(
-                x0=x,
-                y=y,
+            fm_batch = sample_flow_matching_training_batch(
+                x_target=x,
+                y_cond=y,
                 t=t,
+                flow_matcher=flow_matcher,
                 noise_std=cfg["sample"]["init_noise_std"],
             )
+            t = fm_batch.t
+            x_t = fm_batch.x_t
+            v_star = fm_batch.v_target
+            y_cond = fm_batch.y_cond
 
             den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
 
             with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
-                out = model(x_t, y, t)
+                out = model(x_t, y_cond, t)
 
                 if pred_type == "vanilla":
                     v_pred = out
@@ -250,7 +266,7 @@ def main(cfg):
 
                 loss_phys = torch.tensor(0.0, device=device)
                 if cfg["cfm"]["loss"]["physics_weight"] > 0:
-                    loss_phys = physics_loss_from_v(x_t, v_pred, t, y, Hop) * cfg["cfm"]["loss"]["physics_weight"]
+                    loss_phys = physics_loss_from_v(x_t, v_pred, t, y_cond, Hop) * cfg["cfm"]["loss"]["physics_weight"]
 
                 loss = loss_v + loss_phys
 
@@ -306,6 +322,7 @@ def main(cfg):
                     "train/t_mean": float(t.mean().item()),
                     "train/t_std": float(t.std(unbiased=False).item()),
                     "diag/x_t_rms": rms(x_t),
+                    "diag/y_cond_rms": rms(y_cond),
                     "diag/v_pred_rms": rms(v_pred),
                     "diag/nan_or_inf": float(nan_or_inf),
                 }
@@ -391,18 +408,28 @@ def main(cfg):
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
             ssim = eval_metrics.get("eval/ssim", 0.0)
-            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_epoch{epoch}_ssim{ssim:.4f}.pt"
-            torch.save({"model": model.state_dict(), "cfg": cfg, "mode": pred_type}, ckpt_path)
+            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_{flow_matcher_name}_epoch{epoch}_ssim{ssim:.4f}.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "cfg": cfg,
+                    "mode": pred_type,
+                    "matcher": flow_matcher_name,
+                },
+                ckpt_path,
+            )
             print("Saved:", ckpt_path)
 
             if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(
-                    name=f"cfm_lensless_{pred_type}",
+                    name=f"cfm_lensless_{pred_type}_{flow_matcher_name}",
                     type="model",
                     metadata={
                         "epoch": epoch, 
                         "C": C, "H": H_img, "W": W_img, 
-                        "mode": pred_type, "denom_min": denom_min,
+                        "mode": pred_type,
+                        "matcher": flow_matcher_name,
+                        "denom_min": denom_min,
                     },
                 )
                 artifact.add_file(ckpt_path)

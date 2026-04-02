@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
+from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.sampler import sample_with_physics_guidance
@@ -91,6 +92,9 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
     pred_type = _infer_mode(state, fallback=str(cfg.get("train", {}).get("mode", "btb")).lower())
     if pred_type not in ["btb", "vanilla"]:
         raise ValueError(f"Unknown pred_type/mode in ckpt/cfg: {pred_type}")
+    flow_matcher_name = normalize_flow_matcher_name(
+        state.get("matcher", cfg.get("cfm", {}).get("matcher", "rectified"))
+    )
 
     # Sampling settings
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
@@ -146,7 +150,10 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
 
         gt_path = os.path.join(out_dir, f"idx_{idx:05d}_gt.png")
         y_path = os.path.join(out_dir, f"idx_{idx:05d}_y.png")
-        recon_path = os.path.join(out_dir, f"idx_{idx:05d}_recon_steps{int(steps)}_{pred_type}.png")
+        recon_path = os.path.join(
+            out_dir,
+            f"idx_{idx:05d}_recon_steps{int(steps)}_{pred_type}_{flow_matcher_name}.png",
+        )
 
         save_image_only(to_imshow(x), gt_path)
         save_image_only(to_imshow(y), y_path)

@@ -10,6 +10,7 @@ from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 
@@ -80,7 +81,13 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     pred_type = str(state.get("mode", cfg.get("train", {}).get("mode", "btb"))).lower()
     if pred_type not in ["btb", "vanilla"]:
         raise ValueError(f"Unknown pred_type/mode in ckpt/cfg: {pred_type}")
-    print(f"[sample.py] Using pred_type={pred_type} (ckpt.mode={state.get('mode', None)}, cfg.train.mode={cfg.get('train', {}).get('mode', None)})")
+    flow_matcher_name = normalize_flow_matcher_name(
+        state.get("matcher", cfg.get("cfm", {}).get("matcher", "rectified"))
+    )
+    print(
+        f"[sample.py] Using pred_type={pred_type}, matcher={flow_matcher_name} "
+        f"(ckpt.mode={state.get('mode', None)}, ckpt.matcher={state.get('matcher', None)})"
+    )
 
     # -------------------------
     # Sampling settings
@@ -144,7 +151,7 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # Plot grid
     # -------------------------
     ensure_dir(cfg["sample"]["save_dir"])
-    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}_{pred_type}.pdf")
+    out_path = os.path.join(cfg["sample"]["save_dir"], f"steps_grid_{idx}_{pred_type}_{flow_matcher_name}.pdf")
 
     n = len(recons)
     # rows = ceil((n + 2) / cols)  # +2 for y and GT
@@ -179,7 +186,7 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     for s, x_hat in recons:
         r = slot // cols
         c = slot % cols
-        title = f"CFM ({pred_type}) | steps={s}"
+        title = f"CFM ({pred_type}, {flow_matcher_name}) | steps={s}"
         if not disable_physics and dc_steps > 0:
             title += f" | DC={dc_steps}"
         put(axs[r][c], to_imshow(x_hat), title)

@@ -26,6 +26,7 @@ model:
   num_res_blocks: 2
 
 cfm:
+  matcher: "rectified" # "rectified" or "ot_cfm"
   t_min: 0.001
   t_max: 0.999
   sigma_data: 1.0  # used for normalization choices (optional)
