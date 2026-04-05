@@ -6,6 +6,9 @@ tqdm
 matplotlib
 scipy
 scikit-learn
+lpips
+torchmetrics
+torch-fidelity
 # lensless
 # git+https://github.com/ebezzam/slm-controller.git
 waveprop

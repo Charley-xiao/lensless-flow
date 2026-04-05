@@ -260,10 +260,13 @@ def build_figure(args):
     add_point(ax, right_points[0], color=top_color, label=right_labels[0], label_offset=(0.0, 0.38))
     add_point(ax, right_points[1], color=bottom_color, label=right_labels[1], label_offset=(0.0, -0.42))
 
+    def vertical_flip(image: np.ndarray) -> np.ndarray:
+        return image[::-1, :, :]
+
     add_thumbnail(ax, noise_images[0], left_points[0], offset=(-88, 26), frame_color="#7AA3BF", zoom=args.zoom)
     add_thumbnail(ax, noise_images[1], left_points[1], offset=(-118, -26), frame_color="#7AA3BF", zoom=args.zoom)
-    add_thumbnail(ax, target_images[0], right_points[0], offset=(118, 26), frame_color=top_color, zoom=args.zoom)
-    add_thumbnail(ax, target_images[1], right_points[1], offset=(118, -26), frame_color=bottom_color, zoom=args.zoom)
+    add_thumbnail(ax, vertical_flip(target_images[0]), right_points[0], offset=(118, 26), frame_color=top_color, zoom=args.zoom)
+    add_thumbnail(ax, vertical_flip(target_images[1]), right_points[1], offset=(118, -26), frame_color=bottom_color, zoom=args.zoom)
     add_thumbnail(ax, measurement_images[0], measurement_points[0], offset=(-30, 24), frame_color="#6F6F6F", zoom=args.zoom * 0.58)
     add_thumbnail(ax, measurement_images[1], measurement_points[1], offset=(-40, 0), frame_color="#6F6F6F", zoom=args.zoom * 0.58)
 
