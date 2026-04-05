@@ -29,6 +29,23 @@ def _dc_refine_rgb(x: torch.Tensor, y: torch.Tensor, H, step: float, iters: int)
     return x_f.to(dtype=x.dtype)
 
 
+def _maybe_record_trajectory_state(
+    trajectory: list[dict] | None,
+    step_idx: int,
+    time_value: float,
+    state: torch.Tensor,
+) -> None:
+    if trajectory is None:
+        return
+    trajectory.append(
+        {
+            "step": int(step_idx),
+            "time": float(time_value),
+            "state": state.detach().clone(),
+        }
+    )
+
+
 @torch.no_grad()
 def sample_with_physics_guidance(
     model,
@@ -44,6 +61,7 @@ def sample_with_physics_guidance(
     pred_type: str = "btb",   # "btb" or "vanilla"
     dc_mode: str = "rgb",    # deprecated
     solver: str = "heun",    # "heun" (rk2) or "euler" (rk1)
+    trajectory: list[dict] | None = None,
 ):
     """
     ODE sampling with optional physics-guided data-consistency (DC).
@@ -60,6 +78,11 @@ def sample_with_physics_guidance(
             v = (x_pred - z_t) / (1 - t)   with denom clamp
 
     Optional DC after each solver step.
+
+    If `trajectory` is provided, it is populated in-place with dictionaries
+    containing the post-step state:
+      {"step": int, "time": float, "state": Tensor[B,C,H,W]}
+    The initial latent at t=0 is recorded as step 0.
     """
     pred_type = str(pred_type).lower()
     assert pred_type in ["btb", "vanilla"], f"pred_type must be 'btb' or 'vanilla', got {pred_type}"
@@ -78,6 +101,7 @@ def sample_with_physics_guidance(
 
     # time grid
     ts = torch.linspace(0.0, 1.0, steps + 1, device=device, dtype=y.dtype)
+    _maybe_record_trajectory_state(trajectory, step_idx=0, time_value=float(ts[0]), state=z)
 
     # Auto DC step if user didn't specify (or set <=0)
     if (not disable_physics) and dc_steps > 0 and (dc_step is None or dc_step <= 0):
@@ -118,10 +142,11 @@ def sample_with_physics_guidance(
             z = z + (dt * 0.5) * (v0 + v1)
 
         # optional DC refinement (after solver update)
-        if not disable_physics and dc_steps > 0 and dc_step > 0:
+        if not disable_physics and dc_steps > 0 and dc_step > 0: # and k <= steps // 3:
             z = _dc_refine_rgb(z, y, H, step=dc_step, iters=dc_steps)
 
         if clamp_x:
             z = z.clamp(0.0, 1.0)
+        _maybe_record_trajectory_state(trajectory, step_idx=k + 1, time_value=float(t1), state=z)
 
     return z
