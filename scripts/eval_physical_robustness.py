@@ -23,6 +23,8 @@ from scripts._paper_eval_utils import (
     parse_int_list,
     restore_rng_state,
     run_with_latent_seed,
+    samplewise_range,
+    samplewise_rms,
     zero_fill_shift,
 )
 
@@ -46,7 +48,7 @@ def _parse_corruption_list(text: str) -> list[str]:
     text = text.replace(",", " ")
     values = [x.strip() for x in text.split() if x.strip()]
     if "all" in values:
-        return ["exposure_scale", "background_offset", "poisson_peak", "measurement_shift", "psf_shift"]
+        return ["exposure_scale", "background_offset", "measurement_noise", "poisson_peak", "measurement_shift", "psf_shift"]
     return values
 
 
@@ -90,6 +92,46 @@ def _poisson_corrupt(y: torch.Tensor, peak: int, seed: int, clamp_output: bool) 
         restore_rng_state(cpu_state, cuda_states)
 
 
+def _measurement_noise_corrupt(
+    y: torch.Tensor,
+    noise_level: float,
+    seed: int,
+    scale_mode: str,
+    clamp_output: bool,
+) -> tuple[torch.Tensor, float]:
+    if float(noise_level) <= 0.0:
+        return y.clone(), 0.0
+
+    cpu_state, cuda_states = capture_rng_state()
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    try:
+        y_float = y.detach().float()
+        if scale_mode == "rms":
+            scale = samplewise_rms(y_float).clamp_min(1e-8)
+        elif scale_mode == "range":
+            scale = samplewise_range(y_float).clamp_min(1e-8)
+        elif scale_mode == "absmax":
+            dims = tuple(range(1, y.ndim))
+            scale = y_float.abs().amax(dim=dims, keepdim=True).clamp_min(1e-8)
+        elif scale_mode == "fixed":
+            scale = torch.ones((y.shape[0],) + (1,) * (y.ndim - 1), device=y.device, dtype=torch.float32)
+        else:
+            raise ValueError(f"Unknown measurement_noise_scale={scale_mode}")
+
+        noise = torch.randn(y.shape, device="cpu", dtype=torch.float32).to(y.device)
+        noise = noise * (float(noise_level) * scale.float())
+        y_corr = y_float + noise
+        if clamp_output:
+            y_corr = y_corr.clamp(0.0, 1.0)
+
+        actual_rms = float((y_corr - y_float).pow(2).mean().sqrt().item())
+        return y_corr.to(dtype=y.dtype), actual_rms
+    finally:
+        restore_rng_state(cpu_state, cuda_states)
+
+
 def _build_shifted_operator(psf: torch.Tensor, im_hw: tuple[int, int], shift_y: int, shift_x: int, device: torch.device):
     shifted_psf = zero_fill_shift(psf, shift_y=shift_y, shift_x=shift_x)
     return FFTLinearConvOperator(psf=shifted_psf.to(device), im_hw=im_hw).to(device), shifted_psf
@@ -99,6 +141,7 @@ def _corruption_levels(args) -> dict[str, list]:
     return {
         "exposure_scale": parse_float_list(args.exposure_levels),
         "background_offset": parse_float_list(args.offset_levels),
+        "measurement_noise": parse_float_list(args.measurement_noise_levels),
         "poisson_peak": _parse_poisson_levels(args.poisson_peaks),
         "measurement_shift": parse_int_list(args.shift_levels),
         "psf_shift": parse_int_list(args.psf_shift_levels),
@@ -117,6 +160,7 @@ def _apply_corruption(
     seed: int,
     clamp_measurement: bool,
     shift_axis: str,
+    measurement_noise_scale: str,
 ):
     y_corr = y.clone()
     Hop_corr = nominal_H
@@ -137,6 +181,17 @@ def _apply_corruption(
             y_corr = y_corr.clamp(0.0, 1.0)
         actual_rms = float((y_corr - y.float()).pow(2).mean().sqrt().item())
         return y_corr.to(dtype=y.dtype), Hop_corr, level_label, actual_rms
+
+    if corruption == "measurement_noise":
+        noise_level = float(level)
+        y_corr, actual_rms = _measurement_noise_corrupt(
+            y=y,
+            noise_level=noise_level,
+            seed=seed,
+            scale_mode=measurement_noise_scale,
+            clamp_output=clamp_measurement,
+        )
+        return y_corr, Hop_corr, level_label, actual_rms
 
     if corruption == "poisson_peak":
         if level == "clean":
@@ -333,6 +388,7 @@ def main(args):
                             seed=corrupt_seed,
                             clamp_measurement=not args.no_clamp_measurement,
                             shift_axis=args.shift_axis,
+                            measurement_noise_scale=args.measurement_noise_scale,
                         )
 
                         for method_idx, (method_name, runner) in enumerate(methods.items()):
@@ -497,6 +553,7 @@ def main(args):
                 "corruptions": corruptions,
                 "corruption_levels": {k: [str(v) for v in vals] for k, vals in corruption_levels.items() if k in corruptions},
                 "measurement_clamped": not args.no_clamp_measurement,
+                "measurement_noise_scale": args.measurement_noise_scale,
                 "shift_axis": args.shift_axis,
                 "flow_steps": int(args.steps if args.steps is not None else flow_cfg["sample"]["steps"]),
                 "flow_disable_physics": bool(
@@ -548,10 +605,18 @@ if __name__ == "__main__":
     ap.add_argument(
         "--corruptions",
         type=str,
-        default="exposure_scale,background_offset,poisson_peak,measurement_shift,psf_shift",
+        default="exposure_scale,background_offset,measurement_noise,poisson_peak,measurement_shift,psf_shift",
     )
     ap.add_argument("--exposure_levels", type=str, default="1.0,0.85,1.15,0.70,1.30")
     ap.add_argument("--offset_levels", type=str, default="0.0,0.01,0.03,0.05")
+    ap.add_argument("--measurement_noise_levels", type=str, default="0.0,0.01,0.02,0.05")
+    ap.add_argument(
+        "--measurement_noise_scale",
+        type=str,
+        default="rms",
+        choices=["rms", "range", "absmax", "fixed"],
+        help="Scale for additive Gaussian noise on the lensless measurement.",
+    )
     ap.add_argument("--poisson_peaks", type=str, default="clean,1024,256,64,16")
     ap.add_argument("--shift_levels", type=str, default="0,1,2,4")
     ap.add_argument("--psf_shift_levels", type=str, default="0,1,2,4")
