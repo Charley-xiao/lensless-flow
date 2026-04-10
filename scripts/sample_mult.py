@@ -9,7 +9,7 @@ from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import SimpleCondUNet, resolve_use_time_conditioning
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 
@@ -77,16 +77,18 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
     Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
     # Model
+    state = torch.load(ckpt, map_location=device)
+    use_time_conditioning = resolve_use_time_conditioning(cfg, state)
     C = int(y0.shape[1])
     model = SimpleCondUNet(
         img_channels=C,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=use_time_conditioning,
     ).to(device)
 
     # Load checkpoint + pred_type
-    state = torch.load(ckpt, map_location=device)
     model.load_state_dict(state["model"])
     model.eval()
     pred_type = _infer_mode(state, fallback=str(cfg.get("train", {}).get("mode", "btb")).lower())

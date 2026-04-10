@@ -1,6 +1,12 @@
 import torch
 
 
+def _model_uses_time_conditioning(model) -> bool:
+    wrapped = getattr(model, "_orig_mod", model)
+    wrapped = getattr(wrapped, "module", wrapped)
+    return bool(getattr(wrapped, "use_time_conditioning", True))
+
+
 @torch.no_grad()
 def suggested_dc_step(Hop, safety=0.5, eps=1e-12):
     # Hop.otf: [1,C,H,W] complex
@@ -70,7 +76,8 @@ def sample_with_physics_guidance(
     solver="euler": Euler / RK1 (single step)
 
     pred_type="vanilla":
-        model outputs v directly: v = model(z_t, y, t)
+        model outputs v directly: v = model(z_t, y, t), or model(z_t, y)
+        when time conditioning is disabled.
 
     pred_type="btb":
         model outputs x_pred and we convert to velocity:
@@ -93,6 +100,13 @@ def sample_with_physics_guidance(
     solver = str(solver).lower()
     assert solver in ["heun", "euler"], f"solver must be 'heun' or 'euler', got {solver}"
 
+    use_time_conditioning = _model_uses_time_conditioning(model)
+    if pred_type == "btb" and not use_time_conditioning:
+        raise ValueError(
+            "pred_type='btb' requires time conditioning because x-prediction depends on t. "
+            "Use pred_type='vanilla' or enable model.use_time_conditioning."
+        )
+
     device = y.device
     B = y.shape[0]
 
@@ -110,7 +124,7 @@ def sample_with_physics_guidance(
         print(f"Auto DC step: {dc_step:.4e} (L={L:.4e}, safety={safety})")
 
     def _velocity(z_in: torch.Tensor, t_b: torch.Tensor) -> torch.Tensor:
-        out = model(z_in, y, t_b)
+        out = model(z_in, y, t_b if use_time_conditioning else None)
         if pred_type == "vanilla":
             return out
         den = (1.0 - t_b).clamp_min(denom_min).view(B, 1, 1, 1)

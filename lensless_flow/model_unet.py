@@ -5,6 +5,52 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def use_time_conditioning_from_cfg(cfg: dict | None) -> bool:
+    """
+    Read the time-conditioning flag from either a full config or model config.
+    """
+    if cfg is None:
+        return True
+    if isinstance(cfg.get("model"), dict):
+        cfg = cfg["model"]
+    return bool(cfg.get("use_time_conditioning", True))
+
+
+def resolve_use_time_conditioning(
+    cfg: dict | None = None,
+    checkpoint_state: dict | None = None,
+) -> bool:
+    """
+    Prefer an explicit checkpoint setting, then the checkpoint's saved config,
+    and finally the caller-provided config.
+    """
+    if isinstance(checkpoint_state, dict):
+        if "use_time_conditioning" in checkpoint_state:
+            return bool(checkpoint_state["use_time_conditioning"])
+        saved_cfg = checkpoint_state.get("cfg")
+        if isinstance(saved_cfg, dict):
+            return use_time_conditioning_from_cfg(saved_cfg)
+    return use_time_conditioning_from_cfg(cfg)
+
+
+def resolve_baseline_use_time_conditioning(
+    checkpoint_state: dict | None = None,
+) -> bool:
+    """
+    Baseline U-Net defaults to no time conditioning, but honors an explicit
+    setting saved in a checkpoint for backwards compatibility.
+    """
+    if isinstance(checkpoint_state, dict):
+        if "use_time_conditioning" in checkpoint_state:
+            return bool(checkpoint_state["use_time_conditioning"])
+        saved_cfg = checkpoint_state.get("cfg")
+        if isinstance(saved_cfg, dict):
+            model_cfg = saved_cfg.get("model")
+            if isinstance(model_cfg, dict) and "use_time_conditioning" in model_cfg:
+                return bool(model_cfg["use_time_conditioning"])
+    return False
+
+
 def _pick_groups(num_channels: int, max_groups: int = 8) -> int:
     """
     Pick a GroupNorm group count that divides num_channels.
@@ -23,6 +69,7 @@ class TimeEmbedding(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
+        self.out_dim = dim * 4
         self.mlp = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.SiLU(),
@@ -117,7 +164,7 @@ class SimpleCondUNet(nn.Module):
     Inputs:
       x_t: [B, C, H, W]
       y:   [B, C, H, W]
-      t:   [B] in [0,1]
+      t:   [B] in [0,1], or None when time conditioning is disabled
 
     Output:
       v:   [B, C, H, W]
@@ -128,11 +175,13 @@ class SimpleCondUNet(nn.Module):
         base_ch: int = 64,
         channel_mults=(1, 2, 4),
         num_res_blocks: int = 2,
+        use_time_conditioning: bool = True,
     ):
         super().__init__()
         assert num_res_blocks >= 1, "num_res_blocks must be >= 1"
 
         self.img_channels = img_channels
+        self.use_time_conditioning = bool(use_time_conditioning)
         self.tdim = 128
         self.time = TimeEmbedding(self.tdim)
 
@@ -174,9 +223,18 @@ class SimpleCondUNet(nn.Module):
         self.out_norm = nn.GroupNorm(_pick_groups(cur), cur)
         self.out_conv = nn.Conv2d(cur, img_channels, kernel_size=3, padding=1)
 
-    def forward(self, x_t: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        # time embedding
-        t_emb = self.time(t)  # [B, t_ch]
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        y: torch.Tensor,
+        t: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.use_time_conditioning:
+            if t is None:
+                raise ValueError("t must be provided when use_time_conditioning=True.")
+            t_emb = self.time(t)  # [B, t_ch]
+        else:
+            t_emb = x_t.new_zeros((x_t.shape[0], self.time.out_dim))
 
         # input stem
         h = torch.cat([x_t, y], dim=1)

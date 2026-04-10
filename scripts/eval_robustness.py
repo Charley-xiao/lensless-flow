@@ -10,7 +10,11 @@ from tqdm import tqdm
 
 from lensless_flow.data import make_dataloader
 from lensless_flow.metrics import psnr, ssim_torch
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import (
+    SimpleCondUNet,
+    resolve_baseline_use_time_conditioning,
+    resolve_use_time_conditioning,
+)
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -34,16 +38,37 @@ def _effective_batch_size(batch_size: int) -> int:
 def _unet_forward_baseline(model, y: torch.Tensor) -> torch.Tensor:
     b = y.shape[0]
     x_t = torch.zeros_like(y)
-    t = torch.zeros(b, device=y.device, dtype=y.dtype)
+    t = torch.zeros(b, device=y.device, dtype=y.dtype) if getattr(model, "use_time_conditioning", True) else None
     return model(x_t, y, t)
 
 
-def _build_model(cfg, img_channels: int, device: torch.device) -> SimpleCondUNet:
+def _build_model(
+    cfg,
+    img_channels: int,
+    device: torch.device,
+    checkpoint_state: dict | None = None,
+) -> SimpleCondUNet:
     return SimpleCondUNet(
         img_channels=img_channels,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
+    ).to(device)
+
+
+def _build_baseline_model(
+    cfg,
+    img_channels: int,
+    device: torch.device,
+    checkpoint_state: dict | None = None,
+) -> SimpleCondUNet:
+    return SimpleCondUNet(
+        img_channels=img_channels,
+        base_ch=cfg["model"]["base_channels"],
+        channel_mults=tuple(cfg["model"]["channel_mults"]),
+        num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=resolve_baseline_use_time_conditioning(checkpoint_state),
     ).to(device)
 
 
@@ -62,8 +87,8 @@ def _load_flow_runner(
     dc_step_size_override: float | None,
     disable_physics_override: bool | None,
 ):
-    model = _build_model(cfg, img_channels=img_channels, device=device)
     state = _load_checkpoint_state(ckpt_path, device=device)
+    model = _build_model(cfg, img_channels=img_channels, device=device, checkpoint_state=state)
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         model.load_state_dict(state["model"])
     else:
@@ -108,8 +133,8 @@ def _load_flow_runner(
 
 
 def _load_unet_runner(cfg, ckpt_path: str, img_channels: int, device: torch.device):
-    model = _build_model(cfg, img_channels=img_channels, device=device)
     state = _load_checkpoint_state(ckpt_path, device=device)
+    model = _build_baseline_model(cfg, img_channels=img_channels, device=device, checkpoint_state=state)
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         model.load_state_dict(state["model"])
     else:

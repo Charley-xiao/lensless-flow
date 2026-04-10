@@ -27,7 +27,7 @@ def eval_loop(model, dl, device, max_batches=0):
 
         b = y.shape[0]
         x_t = torch.zeros_like(y)
-        t = torch.zeros(b, device=device)
+        t = torch.zeros(b, device=device) if getattr(model, "use_time_conditioning", True) else None
 
         x_hat = model(x_t, y, t).clamp(0, 1)
         psnrs += psnr(x_hat, x)
@@ -71,13 +71,15 @@ def main():
     y0, x0 = train_ds[0]
     y0 = to_nchw(y0)
     C = y0.shape[1]
+    use_time_conditioning = False
 
-    # model: reuse your existing U-Net implementation
+    # Baseline U-Net is a deterministic y -> x map with no time conditioning.
     model = SimpleCondUNet(
         img_channels=C,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=use_time_conditioning,
     ).to(device)
 
     if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
@@ -113,7 +115,7 @@ def main():
 
             b = y.shape[0]
             x_t = torch.zeros_like(y)
-            t = torch.zeros(b, device=device)
+            t = torch.zeros(b, device=device) if use_time_conditioning else None
 
             opt.zero_grad(set_to_none=True)
             with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
@@ -142,7 +144,15 @@ def main():
 
         if (epoch % save_every) == 0:
             ckpt = os.path.join(cfg["train"]["save_dir"], f"unet_baseline_epoch{epoch}.pt")
-            torch.save({"model": model.state_dict(), "cfg": cfg, "epoch": epoch}, ckpt)
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "cfg": cfg,
+                    "epoch": epoch,
+                    "use_time_conditioning": False,
+                },
+                ckpt,
+            )
             print("saved:", ckpt)
 
 

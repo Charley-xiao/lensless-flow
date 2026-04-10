@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import SimpleCondUNet, resolve_use_time_conditioning
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -63,18 +63,20 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # -------------------------
     # Model
     # -------------------------
+    state = torch.load(ckpt, map_location=device)
+    use_time_conditioning = resolve_use_time_conditioning(cfg, state)
     C = y.shape[1]
     model = SimpleCondUNet(
         img_channels=C,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=use_time_conditioning,
     ).to(device)
 
     # -------------------------
     # Load checkpoint + decide pred_type
     # -------------------------
-    state = torch.load(ckpt, map_location=device)
     model.load_state_dict(state["model"])
     model.eval()
 
@@ -86,7 +88,8 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     )
     print(
         f"[sample.py] Using pred_type={pred_type}, matcher={flow_matcher_name} "
-        f"(ckpt.mode={state.get('mode', None)}, ckpt.matcher={state.get('matcher', None)})"
+        f"(ckpt.mode={state.get('mode', None)}, ckpt.matcher={state.get('matcher', None)}, "
+        f"use_time_conditioning={use_time_conditioning})"
     )
 
     # -------------------------

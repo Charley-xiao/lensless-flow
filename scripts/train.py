@@ -12,7 +12,7 @@ import wandb
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import SimpleCondUNet, use_time_conditioning_from_cfg
 from lensless_flow.flow_matching import (
     build_flow_matcher,
     normalize_flow_matcher_name,
@@ -120,8 +120,16 @@ def main(cfg):
     train_mode = str(cfg.get("train", {}).get("mode", "btb")).lower()
     assert train_mode in ["btb", "vanilla"], f"cfg.train.mode must be 'btb' or 'vanilla', got {train_mode}"
     pred_type = train_mode
+    use_time_conditioning = use_time_conditioning_from_cfg(cfg)
+    if pred_type == "btb" and not use_time_conditioning:
+        raise ValueError(
+            "model.use_time_conditioning=false is only supported for train.mode='vanilla'. "
+            "x-prediction / 'btb' depends on t."
+        )
     flow_matcher_name = normalize_flow_matcher_name(cfg.get("cfm", {}).get("matcher", "rectified"))
     flow_matcher = build_flow_matcher(flow_matcher_name)
+    time_tag = "tcond" if use_time_conditioning else "notime"
+    print(f"Time conditioning: {use_time_conditioning}")
 
     # -------------------------
     # W&B init
@@ -130,7 +138,7 @@ def main(cfg):
     use_wandb = bool(wb.get("enabled", True))
     if use_wandb:
         wb_tags = list(wb.get("tags", []))
-        for tag in [pred_type, flow_matcher_name, "cfm", "lensless"]:
+        for tag in [pred_type, flow_matcher_name, time_tag, "cfm", "lensless"]:
             if tag not in wb_tags:
                 wb_tags.append(tag)
         wandb.init(
@@ -185,6 +193,7 @@ def main(cfg):
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=use_time_conditioning,
     ).to(device)
     print("Model params:", sum(p.numel() for p in model.parameters()))
     if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
@@ -224,7 +233,7 @@ def main(cfg):
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
-        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type}, {flow_matcher_name})")
+        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type}, {flow_matcher_name}, {time_tag})")
 
         sum_loss = 0.0
         sum_loss_v = 0.0
@@ -253,7 +262,7 @@ def main(cfg):
             den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
 
             with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
-                out = model(x_t, y_cond, t)
+                out = model(x_t, y_cond, t if use_time_conditioning else None)
 
                 if pred_type == "vanilla":
                     v_pred = out
@@ -319,6 +328,7 @@ def main(cfg):
                     "train/grad_norm": float(grad_norm),
                     "train/lr": float(lr),
                     "train/mode": 0.0 if pred_type == "vanilla" else 1.0,
+                    "train/use_time_conditioning": float(use_time_conditioning),
                     "train/t_mean": float(t.mean().item()),
                     "train/t_std": float(t.std(unbiased=False).item()),
                     "diag/x_t_rms": rms(x_t),
@@ -408,13 +418,14 @@ def main(cfg):
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
             ssim = eval_metrics.get("eval/ssim", 0.0)
-            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_{flow_matcher_name}_epoch{epoch}_ssim{ssim:.4f}.pt"
+            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_{flow_matcher_name}_{time_tag}_epoch{epoch}_ssim{ssim:.4f}.pt"
             torch.save(
                 {
                     "model": model.state_dict(),
                     "cfg": cfg,
                     "mode": pred_type,
                     "matcher": flow_matcher_name,
+                    "use_time_conditioning": use_time_conditioning,
                 },
                 ckpt_path,
             )
@@ -422,13 +433,14 @@ def main(cfg):
 
             if use_wandb and bool(wb.get("log_artifacts", True)):
                 artifact = wandb.Artifact(
-                    name=f"cfm_lensless_{pred_type}_{flow_matcher_name}",
+                    name=f"cfm_lensless_{pred_type}_{flow_matcher_name}_{time_tag}",
                     type="model",
                     metadata={
                         "epoch": epoch, 
                         "C": C, "H": H_img, "W": W_img, 
                         "mode": pred_type,
                         "matcher": flow_matcher_name,
+                        "use_time_conditioning": use_time_conditioning,
                         "denom_min": denom_min,
                     },
                 )

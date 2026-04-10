@@ -11,6 +11,7 @@ model:
   base_channels: 32
   channel_mults: [1, 2, 4, 8]
   num_res_blocks: 2
+  use_time_conditioning: false
 
 train:
   epochs: 50

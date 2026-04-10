@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import SimpleCondUNet, resolve_baseline_use_time_conditioning
 from lensless_flow.tensor_utils import to_nchw
 
 
@@ -52,12 +52,13 @@ def unet_forward_baseline(model, y: torch.Tensor) -> torch.Tensor:
     """
     Baseline: deterministic reconstruction x_hat = f(y).
 
-    We reuse SimpleCondUNet by feeding dummy x_t and t.
-    If you implemented a clean SupervisedUNet(y)->x, swap this function accordingly.
+    We reuse SimpleCondUNet by feeding a zero x_t tensor for channel compatibility.
+    New baseline checkpoints keep time conditioning disabled, but we still
+    support older checkpoints that explicitly saved a time-conditioned setting.
     """
     b = y.shape[0]
     x_t = torch.zeros_like(y)          # dummy
-    t = torch.zeros(b, device=y.device)  # dummy
+    t = torch.zeros(b, device=y.device) if getattr(model, "use_time_conditioning", True) else None
     x_hat = model(x_t, y, t)
     return x_hat
 
@@ -124,15 +125,17 @@ def main(
     Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
 
     # Model
+    state = torch.load(ckpt, map_location=device)
+    use_time_conditioning = resolve_baseline_use_time_conditioning(state)
     model = SimpleCondUNet(
         img_channels=C,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=use_time_conditioning,
     ).to(device)
 
     # Load checkpoint
-    state = torch.load(ckpt, map_location=device)
     if "model" in state and isinstance(state["model"], dict):
         model.load_state_dict(state["model"])
     else:

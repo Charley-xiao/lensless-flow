@@ -10,7 +10,11 @@ import torch
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.metrics import psnr, ssim_torch
-from lensless_flow.model_unet import SimpleCondUNet
+from lensless_flow.model_unet import (
+    SimpleCondUNet,
+    resolve_baseline_use_time_conditioning,
+    resolve_use_time_conditioning,
+)
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -30,12 +34,33 @@ def _load_state_dict(model: SimpleCondUNet, state) -> None:
     model.eval()
 
 
-def _build_unet(cfg, img_channels: int, device: torch.device) -> SimpleCondUNet:
+def _build_unet(
+    cfg,
+    img_channels: int,
+    device: torch.device,
+    checkpoint_state: dict | None = None,
+) -> SimpleCondUNet:
     return SimpleCondUNet(
         img_channels=img_channels,
         base_ch=cfg["model"]["base_channels"],
         channel_mults=tuple(cfg["model"]["channel_mults"]),
         num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
+    ).to(device)
+
+
+def _build_baseline_unet(
+    cfg,
+    img_channels: int,
+    device: torch.device,
+    checkpoint_state: dict | None = None,
+) -> SimpleCondUNet:
+    return SimpleCondUNet(
+        img_channels=img_channels,
+        base_ch=cfg["model"]["base_channels"],
+        channel_mults=tuple(cfg["model"]["channel_mults"]),
+        num_res_blocks=cfg["model"]["num_res_blocks"],
+        use_time_conditioning=resolve_baseline_use_time_conditioning(checkpoint_state),
     ).to(device)
 
 
@@ -43,7 +68,7 @@ def _build_unet(cfg, img_channels: int, device: torch.device) -> SimpleCondUNet:
 def _unet_forward_baseline(model: SimpleCondUNet, y: torch.Tensor) -> torch.Tensor:
     b = y.shape[0]
     x_t = torch.zeros_like(y)
-    t = torch.zeros(b, device=y.device, dtype=y.dtype)
+    t = torch.zeros(b, device=y.device, dtype=y.dtype) if getattr(model, "use_time_conditioning", True) else None
     return model(x_t, y, t)
 
 
@@ -185,7 +210,7 @@ def main(
     psf = to_nchw(test_ds.psf).to(device)
     Hop = FFTLinearConvOperator(psf=psf, im_hw=im_hw).to(device)
 
-    flow_model = _build_unet(flow_cfg, img_channels=img_channels, device=device)
+    flow_model = _build_unet(flow_cfg, img_channels=img_channels, device=device, checkpoint_state=flow_state)
     _load_state_dict(flow_model, flow_state)
 
     steps = int(flow_cfg["sample"]["steps"])
@@ -223,8 +248,13 @@ def main(
     }
 
     if unet_ckpt is not None:
-        baseline_model = _build_unet(unet_cfg, img_channels=img_channels, device=device)
         baseline_state = torch.load(unet_ckpt, map_location=device)
+        baseline_model = _build_baseline_unet(
+            unet_cfg,
+            img_channels=img_channels,
+            device=device,
+            checkpoint_state=baseline_state,
+        )
         _load_state_dict(baseline_model, baseline_state)
         methods["baseline_unet"] = {
             "runner": lambda y: _unet_forward_baseline(baseline_model, y),
