@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 def _to_1chw(psf: torch.Tensor) -> torch.Tensor:
@@ -42,11 +41,9 @@ def psf_to_otf_linear(psf_1chw: torch.Tensor, out_hw: tuple[int, int]) -> torch.
         raise ValueError(f"out_hw too small for psf: out_hw={out_hw}, psf={(h,w)}")
 
     psf_pad = torch.zeros((1, C, Hf, Wf), device=psf_1chw.device, dtype=psf_1chw.dtype)
-    psf_pad[..., :h, :w] = psf_1chw
-
-    # IMPORTANT: shift PSF center to (0,0) for proper convolution in FFT domain.
-    # ifftshift moves the "center" of spatial kernel to the origin.
-    psf_pad = torch.fft.ifftshift(psf_pad, dim=(-2, -1))
+    top = (Hf - h) // 2
+    left = (Wf - w) // 2
+    psf_pad[..., top:top + h, left:left + w] = psf_1chw
 
     otf = torch.fft.fft2(psf_pad)  # complex
     return otf
@@ -54,15 +51,16 @@ def psf_to_otf_linear(psf_1chw: torch.Tensor, out_hw: tuple[int, int]) -> torch.
 
 class FFTLinearConvOperator(nn.Module):
     """
-    Linear operator H: per-channel LINEAR convolution with PSF using FFT padding + crop.
+    Linear operator H: per-channel LINEAR convolution with PSF using centered
+    FFT padding + crop, matching LenslessPiCam's spatial convention.
 
     forward: x [B,C,H,W] -> y [B,C,H,W] (same spatial size as x) by:
-        1) pad x to full size (H+h-1, W+w-1)
+        1) center-embed x on the full linear-convolution grid
         2) FFT multiply by OTF
-        3) IFFT -> y_full
-        4) crop to HxW
+        3) IFFT + ifftshift back to image coordinates
+        4) center-crop to HxW
 
-    adjoint: y [B,C,H,W] -> x [B,C,H,W] (the adjoint of above forward)
+    adjoint: y [B,C,H,W] -> x [B,C,H,W] (the exact adjoint of above forward)
     """
     def __init__(self, psf: torch.Tensor, im_hw: tuple[int, int]):
         super().__init__()
@@ -81,56 +79,43 @@ class FFTLinearConvOperator(nn.Module):
         otf = psf_to_otf_linear(psf, (Hf, Wf))  # [1,C,Hf,Wf]
         self.register_buffer("otf", otf)
 
-        # For adjoint of linear conv: use conjugate OTF, BUT cropping/padding must match.
-        # We'll implement adjoint explicitly via FFT with conj(otf) and matched crop.
-        # Also store crop indices.
-        self._crop_top = (h - 1) // 2
-        self._crop_left = (w - 1) // 2
-
-    def _pad_to_full(self, x: torch.Tensor) -> torch.Tensor:
+    def _center_embed(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         Hf, Wf = self.full_hw
+        top = (Hf - H) // 2
+        left = (Wf - W) // 2
         out = torch.zeros((B, C, Hf, Wf), device=x.device, dtype=x.dtype)
-        out[..., :H, :W] = x
+        out[..., top:top + H, left:left + W] = x
         return out
 
-    def _crop_from_full(self, y_full: torch.Tensor) -> torch.Tensor:
+    def _center_crop(self, y_full: torch.Tensor) -> torch.Tensor:
         """
-        Crop HxW from y_full (full conv result) to align with "same" output.
-        We use a center-ish crop based on psf size.
+        Crop HxW from the centered full-grid convolution result.
         """
         B, C, Hf, Wf = y_full.shape
         H, W = self.im_hw
-        top = self._crop_top
-        left = self._crop_left
+        top = (Hf - H) // 2
+        left = (Wf - W) // 2
         return y_full[..., top:top + H, left:left + W]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B,C,H,W]
-        X = torch.fft.fft2(self._pad_to_full(x))
+        X = torch.fft.fft2(self._center_embed(x))
         Y = X * self.otf  # broadcast over B
         y_full = torch.fft.ifft2(Y).real
-        return self._crop_from_full(y_full)
+        y_full = torch.fft.ifftshift(y_full, dim=(-2, -1))
+        return self._center_crop(y_full)
 
     def adjoint(self, y: torch.Tensor) -> torch.Tensor:
         """
         Adjoint of forward:
-        - Embed y into full grid (inverse of crop): place it at crop region in a zero full image
-        - Apply convolution with flipped kernel => in FFT domain multiply by conj(otf)
-        - Then take the top-left HxW region corresponding to original x placement
+        - Center-embed y on the full grid
+        - Apply convolution with the flipped kernel via conj(otf)
+        - Undo the forward's ifftshift with fftshift
+        - Center-crop back to image size
         """
-        B, C, H, W = y.shape
-        Hf, Wf = self.full_hw
-
-        # inverse crop embedding
-        y_full = torch.zeros((B, C, Hf, Wf), device=y.device, dtype=y.dtype)
-        top = self._crop_top
-        left = self._crop_left
-        y_full[..., top:top + H, left:left + W] = y
-
-        Y = torch.fft.fft2(y_full)
+        Y = torch.fft.fft2(self._center_embed(y))
         X = Y * torch.conj(self.otf)
         x_full = torch.fft.ifft2(X).real
-
-        # inverse of forward padding: forward placed x at [:H,:W]
-        return x_full[..., :H, :W]
+        x_full = torch.fft.fftshift(x_full, dim=(-2, -1))
+        return self._center_crop(x_full)
