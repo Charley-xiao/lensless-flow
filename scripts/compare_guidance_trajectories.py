@@ -293,8 +293,8 @@ def _plot_average_lpips(average_rows: list[dict], out_path: str) -> None:
     plt.close()
 
 
-def _load_model_and_metadata(cfg, ckpt_path: str, img_channels: int, device: torch.device):
-    model = build_model(cfg, img_channels=img_channels, device=device)
+def _load_model_and_metadata(cfg, ckpt_path: str, img_channels: int, im_hw: tuple[int, int], device: torch.device):
+    model = build_model(cfg, img_channels=img_channels, im_hw=im_hw, device=device)
     state = load_checkpoint_state(ckpt_path, device=device)
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         model.load_state_dict(state["model"])
@@ -314,7 +314,7 @@ def main(args):
         cfg = yaml.safe_load(f)
 
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
-    test_ds, _, _, Hop, img_channels, _ = build_test_loader_and_operator(
+    test_ds, _, _, Hop, img_channels, im_hw = build_test_loader_and_operator(
         cfg=cfg,
         batch_size=1,
         num_workers=0,
@@ -326,6 +326,7 @@ def main(args):
         cfg=cfg,
         ckpt_path=args.ckpt,
         img_channels=img_channels,
+        im_hw=im_hw,
         device=device,
     )
 

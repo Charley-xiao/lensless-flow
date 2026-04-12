@@ -12,7 +12,8 @@ import wandb
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet, use_time_conditioning_from_cfg
+from lensless_flow.model_factory import build_flow_model, resolve_model_name
+from lensless_flow.model_unet import use_time_conditioning_from_cfg
 from lensless_flow.flow_matching import (
     build_flow_matcher,
     normalize_flow_matcher_name,
@@ -188,13 +189,15 @@ def main(cfg):
     # -------------------------
     # Model
     # -------------------------
-    model = SimpleCondUNet(
+    model_name = resolve_model_name(cfg)
+    model = build_flow_model(
+        cfg=cfg,
         img_channels=C,
-        base_ch=cfg["model"]["base_channels"],
-        channel_mults=tuple(cfg["model"]["channel_mults"]),
-        num_res_blocks=cfg["model"]["num_res_blocks"],
-        use_time_conditioning=use_time_conditioning,
-    ).to(device)
+        im_hw=(H_img, W_img),
+        device=device,
+        checkpoint_state=None,
+    )
+    print("Model:", model_name)
     print("Model params:", sum(p.numel() for p in model.parameters()))
     if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
         model = torch.compile(model, mode="max-autotune")
@@ -425,6 +428,7 @@ def main(cfg):
                     "cfg": cfg,
                     "mode": pred_type,
                     "matcher": flow_matcher_name,
+                    "model_name": model_name,
                     "use_time_conditioning": use_time_conditioning,
                 },
                 ckpt_path,
@@ -440,6 +444,7 @@ def main(cfg):
                         "C": C, "H": H_img, "W": W_img, 
                         "mode": pred_type,
                         "matcher": flow_matcher_name,
+                        "model_name": model_name,
                         "use_time_conditioning": use_time_conditioning,
                         "denom_min": denom_min,
                     },

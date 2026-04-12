@@ -9,7 +9,8 @@ from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.physics import FFTLinearConvOperator
-from lensless_flow.model_unet import SimpleCondUNet, resolve_use_time_conditioning
+from lensless_flow.model_factory import build_flow_model, resolve_model_name
+from lensless_flow.model_unet import resolve_use_time_conditioning
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 
@@ -80,13 +81,14 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
     state = torch.load(ckpt, map_location=device)
     use_time_conditioning = resolve_use_time_conditioning(cfg, state)
     C = int(y0.shape[1])
-    model = SimpleCondUNet(
+    model_name = resolve_model_name(cfg, checkpoint_state=state)
+    model = build_flow_model(
+        cfg=cfg,
         img_channels=C,
-        base_ch=cfg["model"]["base_channels"],
-        channel_mults=tuple(cfg["model"]["channel_mults"]),
-        num_res_blocks=cfg["model"]["num_res_blocks"],
-        use_time_conditioning=use_time_conditioning,
-    ).to(device)
+        im_hw=(H_img, W_img),
+        device=device,
+        checkpoint_state=state,
+    )
 
     # Load checkpoint + pred_type
     model.load_state_dict(state["model"])
@@ -96,6 +98,10 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
         raise ValueError(f"Unknown pred_type/mode in ckpt/cfg: {pred_type}")
     flow_matcher_name = normalize_flow_matcher_name(
         state.get("matcher", cfg.get("cfm", {}).get("matcher", "rectified"))
+    )
+    print(
+        f"[sample_mult.py] Using model={model_name}, pred_type={pred_type}, "
+        f"matcher={flow_matcher_name}, use_time_conditioning={use_time_conditioning}"
     )
 
     # Sampling settings

@@ -1,0 +1,76 @@
+seed: 123
+
+device: "cuda"
+is_a100: true
+
+data:
+  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset-NORM"
+  split: "train"
+  downsample: 1
+  flip_ud: false
+  num_workers: 10
+
+train:
+  mode: "vanilla" # "vanilla" or "btb"
+  batch_size: 64
+  lr: 2.0e-4
+  epochs: 200
+  grad_clip: 1.0
+  amp: true
+  save_every: 3
+  save_since_epoch: 0.5
+
+model:
+  name: "sit"
+  hidden_size: 384
+  depth: 12
+  num_heads: 6
+  patch_size: 16
+  mlp_ratio: 4.0
+  use_time_conditioning: true
+
+cfm:
+  matcher: "rectified" # "rectified" or "ot_cfm"
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0
+
+physics:
+  disable_in_eval: true
+  dc_step_size: -1
+  dc_steps: 0
+
+sample:
+  steps: 40
+  init_noise_std: 1.0
+  save_dir: "outputs"
+
+wandb:
+  enabled: true
+  project: "lensless-flow"
+  entity: null
+  name: null
+  tags: ["sit", "cfm", "lensless"]
+  log_every: 50
+  eval_batches: 3
+  log_images_every: 1
+  log_artifacts: true
+
+btb:
+  denom_min: 0.05
+
+sched:
+  enabled: true
+  metric: "eval/ssim"
+  mode: "max"
+  factor: 0.5
+  patience: 10
+  threshold: 1.0e-4
+  cooldown: 0
+  min_lr: 2.0e-5
+
+compile:
+  enabled: false
