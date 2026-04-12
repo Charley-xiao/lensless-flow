@@ -65,6 +65,7 @@ class FFTLinearConvOperator(nn.Module):
     def __init__(self, psf: torch.Tensor, im_hw: tuple[int, int]):
         super().__init__()
         psf = _to_1chw(psf)  # [1,C,h,w]
+        # print(f"max psf value: {psf.max().item():.4f}, min psf value: {psf.min().item():.4f}")
         self.register_buffer("psf", psf)
         self.dc_safety = 0.05
 
@@ -97,6 +98,15 @@ class FFTLinearConvOperator(nn.Module):
         top = (Hf - H) // 2
         left = (Wf - W) // 2
         return y_full[..., top:top + H, left:left + W]
+    
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize input to [0, 1].
+        """
+        x_min = x.amin(dim=(-2, -1), keepdim=True)
+        x_max = x.amax(dim=(-2, -1), keepdim=True)
+        x_norm = (x - x_min) / (x_max - x_min + 1e-8)
+        return x_norm.clamp(0, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B,C,H,W]
@@ -104,7 +114,7 @@ class FFTLinearConvOperator(nn.Module):
         Y = X * self.otf  # broadcast over B
         y_full = torch.fft.ifft2(Y).real
         y_full = torch.fft.ifftshift(y_full, dim=(-2, -1))
-        return self._center_crop(y_full)
+        return self._normalize(self._center_crop(y_full))
 
     def adjoint(self, y: torch.Tensor) -> torch.Tensor:
         """
@@ -118,4 +128,4 @@ class FFTLinearConvOperator(nn.Module):
         X = Y * torch.conj(self.otf)
         x_full = torch.fft.ifft2(X).real
         x_full = torch.fft.fftshift(x_full, dim=(-2, -1))
-        return self._center_crop(x_full)
+        return self._normalize(self._center_crop(x_full))
