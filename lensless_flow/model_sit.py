@@ -178,9 +178,14 @@ class ConditionalSiT(nn.Module):
     """
     SiT-style conditional backbone for lensless flow matching.
 
-    We patchify both the noisy state x_t and the measurement y with separate
-    patch embedders, sum them with a fixed 2D sin-cos position embedding, and
-    condition all transformer blocks with adaLN-zero timestep modulation.
+    This stays close to the official SiT implementation:
+    - one patch embedder
+    - one token stream
+    - timestep-only adaLN-zero conditioning
+
+    The project-specific adaptation is to concatenate [x_t, y] along channels
+    before patchification so the transformer sees both the current state and
+    the measurement in the same spatial token stream.
     """
 
     def __init__(
@@ -196,6 +201,7 @@ class ConditionalSiT(nn.Module):
     ):
         super().__init__()
         self.img_channels = int(img_channels)
+        self.in_channels = 2 * self.img_channels
         self.im_hw = (int(im_hw[0]), int(im_hw[1]))
         self.patch_size = _pair(patch_size)
         self.hidden_size = int(hidden_size)
@@ -208,8 +214,7 @@ class ConditionalSiT(nn.Module):
         self.grid_hw = (padded_h // ph, padded_w // pw)
         self.num_patches = self.grid_hw[0] * self.grid_hw[1]
 
-        self.x_embedder = PatchEmbed2D(self.img_channels, self.hidden_size, self.patch_size)
-        self.y_embedder = PatchEmbed2D(self.img_channels, self.hidden_size, self.patch_size)
+        self.x_embedder = PatchEmbed2D(self.in_channels, self.hidden_size, self.patch_size)
         self.t_embedder = TimestepEmbedder(self.hidden_size)
         self.blocks = nn.ModuleList(
             [SiTBlock(self.hidden_size, num_heads=int(num_heads), mlp_ratio=float(mlp_ratio)) for _ in range(int(depth))]
@@ -230,11 +235,10 @@ class ConditionalSiT(nn.Module):
 
         self.apply(_basic_init)
 
-        for embedder in [self.x_embedder, self.y_embedder]:
-            w = embedder.proj.weight.data
-            nn.init.xavier_uniform_(w.view(w.shape[0], -1))
-            if embedder.proj.bias is not None:
-                nn.init.constant_(embedder.proj.bias, 0)
+        w = self.x_embedder.proj.weight.data
+        nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+        if self.x_embedder.proj.bias is not None:
+            nn.init.constant_(self.x_embedder.proj.bias, 0)
 
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
@@ -270,9 +274,9 @@ class ConditionalSiT(nn.Module):
                 f"got x_t={tuple(x_t.shape[-2:])}, y={tuple(y.shape[-2:])}"
             )
 
-        x_tokens = self.x_embedder(self._pad_input(x_t))
-        y_tokens = self.y_embedder(self._pad_input(y))
-        tokens = x_tokens + y_tokens + self.pos_embed.to(dtype=x_tokens.dtype, device=x_tokens.device)
+        inputs = torch.cat([x_t, y], dim=1)
+        tokens = self.x_embedder(self._pad_input(inputs))
+        tokens = tokens + self.pos_embed.to(dtype=tokens.dtype, device=tokens.device)
 
         if self.use_time_conditioning:
             if t is None:
