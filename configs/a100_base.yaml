@@ -16,14 +16,14 @@ train:
   lr: 2.0e-4
   epochs: 200
   grad_clip: 1.0
-  amp: false
+  amp: true
   save_every: 3
   save_since_epoch: 0.5
 
 model:
-  base_channels: 32
+  base_channels: 48
   channel_mults: [1, 2, 4, 8]
-  num_res_blocks: 2
+  num_res_blocks: 3
   use_time_conditioning: true  # set false to ignore t in vanilla v-pred; incompatible with btb / x-pred
 
 cfm:
