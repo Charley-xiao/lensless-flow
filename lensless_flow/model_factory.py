@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 
 from lensless_flow.model_sit import ConditionalSiT
 from lensless_flow.model_unet import (
@@ -72,7 +73,7 @@ def build_flow_model(
     else:
         raise AssertionError(f"Unhandled model_name={model_name}")
 
-    return model.to(device)
+    return model.to(device, memory_format=torch.channels_last)
 
 
 def build_baseline_unet(

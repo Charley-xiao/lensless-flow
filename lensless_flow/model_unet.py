@@ -70,6 +70,14 @@ class TimeEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
         self.out_dim = dim * 4
+        half = dim // 2
+
+        base_freqs = torch.exp(
+            -torch.arange(half, dtype=torch.float32)
+            * (math.log(10000.0) / max(half - 1, 1))
+        )
+        self.register_buffer("base_freqs", base_freqs, persistent=False)
+
         self.mlp = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.SiLU(),
@@ -77,16 +85,7 @@ class TimeEmbedding(nn.Module):
         )
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        t: [B], assumed in [0, 1]
-        returns: [B, dim*4]
-        """
-        half = self.dim // 2
-        # log-spaced frequencies
-        freqs = torch.exp(
-            -torch.arange(half, device=t.device, dtype=t.dtype)
-            * (math.log(10000.0) / max(half - 1, 1))
-        )
+        freqs = self.base_freqs.to(device=t.device, dtype=t.dtype)
         args = t[:, None] * freqs[None, :]
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
