@@ -5,9 +5,9 @@ import os
 from collections import defaultdict
 
 import torch
-import yaml
 from tqdm import tqdm
 
+from lensless_flow.config import load_config
 from lensless_flow.data import make_dataloader
 from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.model_factory import (
@@ -300,16 +300,7 @@ def _plot_summary(summary_rows: list[dict], out_path: str) -> None:
     plt.close(fig)
 
 
-def main(args):
-    with open(args.config, "r") as f:
-        flow_cfg = yaml.safe_load(f)
-
-    if args.unet_config:
-        with open(args.unet_config, "r") as f:
-            unet_cfg = yaml.safe_load(f)
-    else:
-        unet_cfg = flow_cfg
-
+def main(args, flow_cfg, unet_cfg):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
     batch_size = _effective_batch_size(args.batch_size)
 
@@ -660,4 +651,7 @@ if __name__ == "__main__":
         help="Do not clamp perturbed measurements back to [0,1].",
     )
     ap.add_argument("--out_dir", type=str, default=os.path.join("outputs", "robustness"))
-    main(ap.parse_args())
+    args, overrides = ap.parse_known_args()
+    flow_cfg = load_config(args.config, overrides)
+    unet_cfg = load_config(args.unet_config, overrides) if args.unet_config else flow_cfg
+    main(args, flow_cfg, unet_cfg)

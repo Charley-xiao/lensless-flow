@@ -2,6 +2,7 @@ torch>=2.1
 torchvision>=0.16
 numpy
 pyyaml
+omegaconf
 tqdm
 matplotlib
 scipy

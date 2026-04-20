@@ -1,10 +1,10 @@
 import argparse
-import yaml
 import os
 
 import torch
 import matplotlib.pyplot as plt
 
+from lensless_flow.config import load_config
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
@@ -181,10 +181,8 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--disable_physics", type=str, default=None, help="Override cfg.physics.disable_in_eval.")
     ap.add_argument("--out_dir", type=str, default=None)
-    args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    args, overrides = ap.parse_known_args()
+    cfg = load_config(args.config, overrides)
 
     idxs = _parse_int_list(args.idxs)
 

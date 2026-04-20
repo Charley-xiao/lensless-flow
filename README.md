@@ -64,6 +64,16 @@ python -m scripts.train --config configs/base.yaml
 python -m scripts.train --config configs/a100_base.yaml
 ```
 
+Any script that takes `--config` also accepts OmegaConf-style CLI overrides, so you can tweak nested fields without editing YAML files:
+
+```bash
+python -m scripts.train --config configs/a100_base.yaml train.batch_size=16 model.base_channels=48 wandb.enabled=false
+python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/your_model.pt --steps 20,40 physics.dc_steps=2
+python -m scripts.eval --config configs/base.yaml --ckpt checkpoints/your_model.pt sample.steps=30
+```
+
+For scripts that already expose a dedicated flag such as `--steps`, that explicit flag still takes precedence over the config value.
+
 The default training configs now use a compact `nafnet`-style backbone:
 - restoration-oriented local NAF blocks for strong low-level image priors
 - no quadratic-attention bottleneck, so training memory stays much more predictable at full resolution

@@ -1,11 +1,11 @@
 import argparse
-import yaml
 import os
 from math import ceil
 
 import torch
 import matplotlib.pyplot as plt
 
+from lensless_flow.config import load_config
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.physics import FFTLinearConvOperator
@@ -231,10 +231,8 @@ if __name__ == "__main__":
         help="Override cfg.physics.disable_in_eval. Use true/false (or 1/0).",
     )
 
-    args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    args, overrides = ap.parse_known_args()
+    cfg = load_config(args.config, overrides)
 
     steps_list = [int(s.strip()) for s in args.steps.split(",") if s.strip()]
     main(

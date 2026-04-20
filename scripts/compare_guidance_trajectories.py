@@ -5,8 +5,8 @@ import os
 
 import matplotlib.pyplot as plt
 import torch
-import yaml
 
+from lensless_flow.config import load_config
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.sampler import sample_with_physics_guidance
@@ -309,10 +309,7 @@ def _load_model_and_metadata(cfg, ckpt_path: str, img_channels: int, im_hw: tupl
     return model, pred_type, matcher_name
 
 
-def main(args):
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
-
+def main(args, cfg):
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
     test_ds, _, _, Hop, img_channels, im_hw = build_test_loader_and_operator(
         cfg=cfg,
@@ -497,4 +494,6 @@ if __name__ == "__main__":
     ap.add_argument("--guided_dc_steps", type=int, default=None, help="Override physics-guided dc_steps.")
     ap.add_argument("--guided_dc_step_size", type=float, default=None, help="Override physics-guided dc_step_size.")
     ap.add_argument("--out_dir", type=str, default=os.path.join("outputs", "guidance_trajectory_compare"))
-    main(ap.parse_args())
+    args, overrides = ap.parse_known_args()
+    cfg = load_config(args.config, overrides)
+    main(args, cfg)

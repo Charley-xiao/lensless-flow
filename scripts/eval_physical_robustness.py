@@ -4,9 +4,9 @@ import json
 import os
 
 import torch
-import yaml
 from tqdm import tqdm
 
+from lensless_flow.config import load_config
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.utils import ensure_dir
@@ -266,16 +266,7 @@ def _plot_summary(summary_rows: list[dict], out_path: str) -> str | None:
     return out_path
 
 
-def main(args):
-    with open(args.config, "r") as f:
-        flow_cfg = yaml.safe_load(f)
-
-    if args.unet_config:
-        with open(args.unet_config, "r") as f:
-            unet_cfg = yaml.safe_load(f)
-    else:
-        unet_cfg = flow_cfg
-
+def main(args, flow_cfg, unet_cfg):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
     batch_size = effective_batch_size(args.batch_size)
 
@@ -635,4 +626,7 @@ if __name__ == "__main__":
     ap.add_argument("--flow_disable_physics", action=argparse.BooleanOptionalAction, default=None)
     ap.add_argument("--no_clamp_measurement", action="store_true")
     ap.add_argument("--out_dir", type=str, default=os.path.join("outputs", "physical_robustness"))
-    main(ap.parse_args())
+    args, overrides = ap.parse_known_args()
+    flow_cfg = load_config(args.config, overrides)
+    unet_cfg = load_config(args.unet_config, overrides) if args.unet_config else flow_cfg
+    main(args, flow_cfg, unet_cfg)

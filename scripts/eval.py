@@ -2,12 +2,12 @@ import argparse
 import math
 import os
 
-import yaml
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 
+from lensless_flow.config import load_config
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.metrics import psnr, ssim_torch
@@ -350,16 +350,9 @@ if __name__ == "__main__":
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--max_batches", type=int, default=200)
-    args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        flow_cfg = yaml.safe_load(f)
-
-    if args.unet_config is not None:
-        with open(args.unet_config, "r") as f:
-            unet_cfg = yaml.safe_load(f)
-    else:
-        unet_cfg = flow_cfg
+    args, overrides = ap.parse_known_args()
+    flow_cfg = load_config(args.config, overrides)
+    unet_cfg = load_config(args.unet_config, overrides) if args.unet_config is not None else flow_cfg
 
     max_batches = None if args.max_batches < 0 else args.max_batches
     resolved_unet_ckpt = _resolve_default_unet_ckpt(args.unet_ckpt)

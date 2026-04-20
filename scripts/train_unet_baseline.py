@@ -1,4 +1,4 @@
-import argparse, os, yaml
+import argparse, os
 from tqdm import tqdm
 
 import torch
@@ -7,6 +7,7 @@ from torch.amp import autocast, GradScaler
 
 import wandb
 
+from lensless_flow.config import load_config
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.model_unet import SimpleCondUNet
@@ -41,10 +42,8 @@ def eval_loop(model, dl, device, max_batches=0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    args, overrides = ap.parse_known_args()
+    cfg = load_config(args.config, overrides)
 
     set_seed(cfg["seed"])
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
