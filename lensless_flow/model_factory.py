@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 
+from lensless_flow.model_hybrid import ConditionalHybridFormer
 from lensless_flow.model_sit import ConditionalSiT
 from lensless_flow.model_unet import (
     SimpleCondUNet,
@@ -17,6 +18,12 @@ def normalize_model_name(name: str | None) -> str:
         "unet": "unet",
         "simplecondunet": "unet",
         "simple_cond_unet": "unet",
+        "hybrid": "hybridformer",
+        "hybridformer": "hybridformer",
+        "conditionalhybridformer": "hybridformer",
+        "conditional_hybridformer": "hybridformer",
+        "hybrid_transformer": "hybridformer",
+        "hybrid_unet": "hybridformer",
         "sit": "sit",
         "conditionalsit": "sit",
         "conditional_sit": "sit",
@@ -57,6 +64,17 @@ def build_flow_model(
             base_ch=cfg["model"]["base_channels"],
             channel_mults=tuple(cfg["model"]["channel_mults"]),
             num_res_blocks=cfg["model"]["num_res_blocks"],
+            use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
+        )
+    elif model_name == "hybridformer":
+        model = ConditionalHybridFormer(
+            img_channels=img_channels,
+            base_ch=cfg["model"].get("base_channels", 32),
+            channel_mults=tuple(cfg["model"].get("channel_mults", [1, 2, 4, 6])),
+            num_res_blocks=cfg["model"].get("num_res_blocks", 2),
+            bottleneck_depth=cfg["model"].get("bottleneck_depth", 4),
+            num_heads=cfg["model"].get("num_heads", 6),
+            mlp_ratio=cfg["model"].get("mlp_ratio", 2.0),
             use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
         )
     elif model_name == "sit":
