@@ -244,8 +244,8 @@ def main(cfg):
         n_batches = 0
 
         for y, x in pbar:
-            y = to_nchw(y).to(device, non_blocking=True, memory_format=torch.channels_last)
-            x = to_nchw(x).to(device, non_blocking=True, memory_format=torch.channels_last)
+            y = to_nchw(y).to(device, non_blocking=True)
+            x = to_nchw(x).to(device, non_blocking=True)
 
             b = x.shape[0]
             t = sample_t(b, cfg["cfm"]["t_min"], cfg["cfm"]["t_max"], device)

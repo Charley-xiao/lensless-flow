@@ -73,7 +73,7 @@ def build_flow_model(
     else:
         raise AssertionError(f"Unhandled model_name={model_name}")
 
-    return model.to(device, memory_format=torch.channels_last)
+    return model.to(device)
 
 
 def build_baseline_unet(
