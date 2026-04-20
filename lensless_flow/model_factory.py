@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 
 from lensless_flow.model_hybrid import ConditionalHybridFormer
+from lensless_flow.model_nafnet import ConditionalNAFNet
 from lensless_flow.model_sit import ConditionalSiT
 from lensless_flow.model_unet import (
     SimpleCondUNet,
@@ -24,6 +25,10 @@ def normalize_model_name(name: str | None) -> str:
         "conditional_hybridformer": "hybridformer",
         "hybrid_transformer": "hybridformer",
         "hybrid_unet": "hybridformer",
+        "naf": "nafnet",
+        "nafnet": "nafnet",
+        "conditionalnafnet": "nafnet",
+        "conditional_nafnet": "nafnet",
         "sit": "sit",
         "conditionalsit": "sit",
         "conditional_sit": "sit",
@@ -75,6 +80,19 @@ def build_flow_model(
             bottleneck_depth=cfg["model"].get("bottleneck_depth", 4),
             num_heads=cfg["model"].get("num_heads", 6),
             mlp_ratio=cfg["model"].get("mlp_ratio", 2.0),
+            attn_pool=cfg["model"].get("attn_pool", 4),
+            use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
+        )
+    elif model_name == "nafnet":
+        model = ConditionalNAFNet(
+            img_channels=img_channels,
+            base_ch=cfg["model"].get("base_channels", 32),
+            channel_mults=tuple(cfg["model"].get("channel_mults", [1, 2, 4, 8])),
+            num_res_blocks=cfg["model"].get("num_res_blocks", 2),
+            middle_blocks=cfg["model"].get("middle_blocks", 4),
+            dw_expand=cfg["model"].get("dw_expand", 2),
+            ffn_expand=cfg["model"].get("ffn_expand", 2),
+            dropout=cfg["model"].get("dropout", 0.0),
             use_time_conditioning=resolve_use_time_conditioning(cfg, checkpoint_state),
         )
     elif model_name == "sit":

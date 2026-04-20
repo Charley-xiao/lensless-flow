@@ -200,6 +200,7 @@ class ConditionalHybridFormer(nn.Module):
         bottleneck_depth: int = 4,
         num_heads: int = 6,
         mlp_ratio: float = 2.0,
+        attn_pool: int = 4,
         use_time_conditioning: bool = True,
     ):
         super().__init__()
@@ -209,9 +210,12 @@ class ConditionalHybridFormer(nn.Module):
             raise ValueError("num_res_blocks must be >= 1.")
         if bottleneck_depth < 1:
             raise ValueError("bottleneck_depth must be >= 1.")
+        if attn_pool < 1:
+            raise ValueError("attn_pool must be >= 1.")
 
         self.img_channels = int(img_channels)
         self.use_time_conditioning = bool(use_time_conditioning)
+        self.attn_pool = int(attn_pool)
         self.tdim = max(64, base_ch * 2)
         self.time = TimeEmbedding(self.tdim)
         t_ch = self.time.out_dim
@@ -250,6 +254,7 @@ class ConditionalHybridFormer(nn.Module):
 
         self.mid_latent = LocalFeatureBlock(cur, cur, t_ch=t_ch)
         self.mid_cond = LocalFeatureBlock(cur, cur, t_ch=None)
+        self.global_proj = nn.Conv2d(cur, cur, kernel_size=1)
         self.transformer = nn.ModuleList(
             [CrossTransformerBlock(cur, num_heads=num_heads, t_ch=t_ch, mlp_ratio=mlp_ratio) for _ in range(bottleneck_depth)]
         )
@@ -317,8 +322,31 @@ class ConditionalHybridFormer(nn.Module):
 
         latent = self.mid_latent(latent, t_emb)
         cond = self.mid_cond(cond, None)
+
+        bottleneck_hw = latent.shape[-2:]
+        if self.attn_pool > 1:
+            pooled_hw = (
+                max(1, (bottleneck_hw[0] + self.attn_pool - 1) // self.attn_pool),
+                max(1, (bottleneck_hw[1] + self.attn_pool - 1) // self.attn_pool),
+            )
+            latent_global = F.adaptive_avg_pool2d(latent, pooled_hw)
+            cond_global = F.adaptive_avg_pool2d(cond, pooled_hw)
+        else:
+            latent_global = latent
+            cond_global = cond
+
         for block in self.transformer:
-            latent = block(latent, cond, t_emb)
+            latent_global = block(latent_global, cond_global, t_emb)
+
+        if self.attn_pool > 1:
+            latent = latent + F.interpolate(
+                self.global_proj(latent_global),
+                size=bottleneck_hw,
+                mode="bilinear",
+                align_corners=False,
+            )
+        else:
+            latent = latent_global
 
         for stage in self.decoder:
             latent = stage["up"](latent)

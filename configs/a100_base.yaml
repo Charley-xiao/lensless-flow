@@ -16,18 +16,19 @@ train:
   lr: 2.0e-4
   epochs: 200
   grad_clip: 1.0
-  amp: false
+  amp: true
   save_every: 2
   save_since_epoch: 0.5
 
 model:
-  name: "hybridformer"
-  base_channels: 40
-  channel_mults: [1, 2, 4, 6]
+  name: "nafnet"
+  base_channels: 32
+  channel_mults: [1, 2, 4, 8]
   num_res_blocks: 2
-  bottleneck_depth: 6
-  num_heads: 8
-  mlp_ratio: 2.0
+  middle_blocks: 6
+  dw_expand: 2
+  ffn_expand: 2
+  dropout: 0.0
   use_time_conditioning: true  # set false to ignore t in vanilla v-pred; incompatible with btb / x-pred
 
 cfm:

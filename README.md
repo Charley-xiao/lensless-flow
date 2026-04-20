@@ -64,10 +64,10 @@ python -m scripts.train --config configs/base.yaml
 python -m scripts.train --config configs/a100_base.yaml
 ```
 
-The default training configs now use a compact `hybridformer` backbone:
-- local depthwise encoder/decoder blocks for parameter efficiency
-- a cross-attention bottleneck that lets the evolving sample attend to the lensless measurement
-- the old CNN U-Net and SiT transformer remain available via `model.name: unet` or `model.name: sit`
+The default training configs now use a compact `nafnet`-style backbone:
+- restoration-oriented local NAF blocks for strong low-level image priors
+- no quadratic-attention bottleneck, so training memory stays much more predictable at full resolution
+- the older `unet`, `hybridformer`, and `sit` backbones remain available through `model.name`
 
 Switch between the default rectified-flow training objective and OT-CFM by editing:
 
