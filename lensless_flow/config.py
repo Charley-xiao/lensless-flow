@@ -20,6 +20,22 @@ def _normalize_cli_overrides(overrides: Sequence[str] | None) -> list[str]:
     return normalized
 
 
+def merge_config(base_config: dict, overrides: Sequence[str] | None = None) -> dict:
+    """
+    Merge an in-memory mapping config with optional OmegaConf dotlist overrides.
+    """
+
+    base_cfg = OmegaConf.create(base_config)
+    cli_overrides = _normalize_cli_overrides(overrides)
+    if cli_overrides:
+        base_cfg = OmegaConf.merge(base_cfg, OmegaConf.from_dotlist(cli_overrides))
+
+    resolved = OmegaConf.to_container(base_cfg, resolve=True)
+    if not isinstance(resolved, dict):
+        raise TypeError(f"Expected a mapping config, got {type(resolved).__name__}.")
+    return resolved
+
+
 def load_config(config_path: str | Path, overrides: Sequence[str] | None = None) -> dict:
     """
     Load a YAML config and merge optional OmegaConf dotlist overrides.
@@ -29,11 +45,4 @@ def load_config(config_path: str | Path, overrides: Sequence[str] | None = None)
     """
 
     base_cfg = OmegaConf.load(str(config_path))
-    cli_overrides = _normalize_cli_overrides(overrides)
-    if cli_overrides:
-        base_cfg = OmegaConf.merge(base_cfg, OmegaConf.from_dotlist(cli_overrides))
-
-    resolved = OmegaConf.to_container(base_cfg, resolve=True)
-    if not isinstance(resolved, dict):
-        raise TypeError(f"Expected a mapping config at '{config_path}', got {type(resolved).__name__}.")
-    return resolved
+    return merge_config(base_cfg, overrides)

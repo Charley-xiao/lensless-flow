@@ -92,6 +92,7 @@ cfm:
 python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/cfm_lensless_vanilla_rectified_epoch10_ssim0.7000.pt --idx 0 --steps 5,10,20,30,50 --cols 4
 python -m scripts.eval --config configs/base.yaml --ckpt ...
 python -m scripts.visualize_distribution --config configs/base.yaml --split train --max_samples 1000
+python -m scripts.eval_upsampling --ckpt checkpoints/vanilla.pt --batch_size 8
 ```
 
 ## Checkpoints
