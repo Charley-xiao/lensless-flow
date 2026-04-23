@@ -62,7 +62,7 @@ btb:
 
 sched:
   enabled: true
-  metric: "eval/ssim"
+  metric: "eval/psnr"
   mode: "max"
   factor: 0.5
   patience: 10
