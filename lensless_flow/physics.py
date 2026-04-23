@@ -2,6 +2,42 @@ import torch
 import torch.nn as nn
 
 
+def _center_pad(x: torch.Tensor, out_hw: tuple[int, int]) -> torch.Tensor:
+    """
+    Adjoint of center crop for BCHW tensors.
+
+    Places x in the center of a zero tensor with spatial size out_hw.
+    """
+    if x.ndim != 4:
+        raise ValueError(f"Expected BCHW tensor, got shape={tuple(x.shape)}")
+
+    B, C, h, w = x.shape
+    H, W = int(out_hw[0]), int(out_hw[1])
+    if H < h or W < w:
+        raise ValueError(f"out_hw={out_hw} is smaller than input spatial size={(h, w)}")
+
+    out = torch.zeros((B, C, H, W), device=x.device, dtype=x.dtype)
+    top = (H - h) // 2
+    left = (W - w) // 2
+    out[..., top:top + h, left:left + w] = x
+    return out
+
+
+def _center_crop(x: torch.Tensor, out_hw: tuple[int, int]) -> torch.Tensor:
+    """Center crop BCHW tensor x to spatial size out_hw."""
+    if x.ndim != 4:
+        raise ValueError(f"Expected BCHW tensor, got shape={tuple(x.shape)}")
+
+    H, W = x.shape[-2:]
+    h, w = int(out_hw[0]), int(out_hw[1])
+    if H < h or W < w:
+        raise ValueError(f"Cannot crop spatial size={(H, W)} to larger out_hw={out_hw}")
+
+    top = (H - h) // 2
+    left = (W - w) // 2
+    return x[..., top:top + h, left:left + w]
+
+
 def _to_1chw(psf: torch.Tensor) -> torch.Tensor:
     """
     Normalize psf to shape [1,C,h,w].
@@ -28,22 +64,36 @@ def _to_1chw(psf: torch.Tensor) -> torch.Tensor:
     return psf
 
 
+def _to_mask_1chw(mask: torch.Tensor, channels: int, im_hw: tuple[int, int], dtype: torch.dtype) -> torch.Tensor:
+    mask = _to_1chw(mask).to(dtype=dtype)
+    _, mask_channels, H, W = mask.shape
+    if (H, W) != im_hw:
+        raise ValueError(f"mask spatial shape must be {im_hw}, got {(H, W)}")
+    if mask_channels not in (1, channels):
+        raise ValueError(f"mask channels must be 1 or {channels}, got {mask_channels}")
+    if mask_channels == 1 and channels != 1:
+        mask = mask.expand(1, channels, H, W)
+    return mask.contiguous()
+
+
 def psf_to_otf_linear(psf_1chw: torch.Tensor, out_hw: tuple[int, int]) -> torch.Tensor:
     """
-    Build OTF for LINEAR convolution via FFT on a padded grid of size out_hw=(Hf,Wf).
+    Build an FFT kernel on a padded grid of size out_hw=(Hp,Wp).
+
+    The PSF is center-padded, then ifftshifted so its center becomes the
+    zero-phase FFT origin, matching the reference DiffuserCam convention.
+
     psf_1chw: [1,C,h,w]
-    Returns otf: [1,C,Hf,Wf] complex
+    Returns otf: [1,C,Hp,Wp] complex
     """
     psf_1chw = _to_1chw(psf_1chw)
     _, C, h, w = psf_1chw.shape
-    Hf, Wf = out_hw
-    if Hf < h or Wf < w:
+    Hp, Wp = out_hw
+    if Hp < h or Wp < w:
         raise ValueError(f"out_hw too small for psf: out_hw={out_hw}, psf={(h,w)}")
 
-    psf_pad = torch.zeros((1, C, Hf, Wf), device=psf_1chw.device, dtype=psf_1chw.dtype)
-    top = (Hf - h) // 2
-    left = (Wf - w) // 2
-    psf_pad[..., top:top + h, left:left + w] = psf_1chw
+    psf_pad = _center_pad(psf_1chw, (Hp, Wp))
+    psf_pad = torch.fft.ifftshift(psf_pad, dim=(-2, -1))
 
     otf = torch.fft.fft2(psf_pad)  # complex
     return otf
@@ -51,81 +101,113 @@ def psf_to_otf_linear(psf_1chw: torch.Tensor, out_hw: tuple[int, int]) -> torch.
 
 class FFTLinearConvOperator(nn.Module):
     """
-    Linear operator H: per-channel LINEAR convolution with PSF using centered
-    FFT padding + crop, matching LenslessPiCam's spatial convention.
+    FFT implementation of the DiffuserCam linear convolution operator.
 
-    forward: x [B,C,H,W] -> y [B,C,H,W] (same spatial size as x) by:
-        1) center-embed x on the full linear-convolution grid
-        2) FFT multiply by OTF
-        3) IFFT + ifftshift back to image coordinates
-        4) center-crop to HxW
+    Reference padded-space model:
+        A(x_pad) = mask * crop(x_pad * psf)
+        A*(y)    = conv_psf^*(pad(mask * y))
 
-    adjoint: y [B,C,H,W] -> x [B,C,H,W] (the exact adjoint of above forward)
+    For compatibility with the rest of this repo, ``forward`` accepts a
+    sensor/image-space tensor [B,C,H,W], center-pads it into the padded object
+    space, applies A, then normalizes the simulated measurement to [0,1].
+    ``adjoint`` returns the exact adjoint of the unnormalized same-size
+    linear operator, i.e. crop(A*(y)).
+
+    Use ``forward_linear`` / ``forward_padded`` and ``adjoint`` /
+    ``adjoint_padded`` for direct reference linear-operator calculations.
     """
-    def __init__(self, psf: torch.Tensor, im_hw: tuple[int, int]):
+    def __init__(
+        self,
+        psf: torch.Tensor,
+        im_hw: tuple[int, int],
+        mask: torch.Tensor | None = None,
+        padded_hw: tuple[int, int] | None = None,
+        normalize_output: bool = True,
+        normalize_eps: float = 1e-12,
+    ):
         super().__init__()
         psf = _to_1chw(psf)  # [1,C,h,w]
-        # print(f"max psf value: {psf.max().item():.4f}, min psf value: {psf.min().item():.4f}")
         self.register_buffer("psf", psf)
         self.dc_safety = 0.05
+        self.normalize_output = bool(normalize_output)
+        self.normalize_eps = float(normalize_eps)
 
         self.im_hw = (int(im_hw[0]), int(im_hw[1]))
         _, C, h, w = psf.shape
         self.psf_hw = (h, w)
 
         H, W = self.im_hw
-        Hf, Wf = H + h - 1, W + w - 1
-        self.full_hw = (Hf, Wf)
+        if padded_hw is None:
+            padded_hw = (2 * H, 2 * W)
+        self.padded_hw = (int(padded_hw[0]), int(padded_hw[1]))
+        self.full_hw = self.padded_hw
 
-        otf = psf_to_otf_linear(psf, (Hf, Wf))  # [1,C,Hf,Wf]
+        otf = psf_to_otf_linear(psf, self.padded_hw)  # [1,C,Hp,Wp]
         self.register_buffer("otf", otf)
 
+        if mask is None:
+            mask = torch.ones((1, C, H, W), device=psf.device, dtype=psf.dtype)
+        else:
+            mask = _to_mask_1chw(mask.to(device=psf.device), C, self.im_hw, psf.dtype)
+        self.register_buffer("mask", mask)
+
     def _center_embed(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        Hf, Wf = self.full_hw
-        top = (Hf - H) // 2
-        left = (Wf - W) // 2
-        out = torch.zeros((B, C, Hf, Wf), device=x.device, dtype=x.dtype)
-        out[..., top:top + H, left:left + W] = x
-        return out
+        return _center_pad(x, self.padded_hw)
 
     def _center_crop(self, y_full: torch.Tensor) -> torch.Tensor:
+        return _center_crop(y_full, self.im_hw)
+
+    def _max_normalize_and_clip(self, y: torch.Tensor) -> torch.Tensor:
         """
-        Crop HxW from the centered full-grid convolution result.
+        Scale each BCHW measurement by its own maximum value and clip to [0,1].
         """
-        B, C, Hf, Wf = y_full.shape
-        H, W = self.im_hw
-        top = (Hf - H) // 2
-        left = (Wf - W) // 2
-        return y_full[..., top:top + H, left:left + W]
-    
-    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        scale = y.amax(dim=(1, 2, 3), keepdim=True).clamp_min(self.normalize_eps)
+        return (y / scale).clamp(0.0, 1.0)
+
+    def forward_padded(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Normalize input to [0, 1].
+        Reference A(x): padded/object space [B,C,Hp,Wp] -> sensor [B,C,H,W].
         """
-        x_min = x.amin(dim=(-2, -1), keepdim=True)
-        x_max = x.amax(dim=(-2, -1), keepdim=True)
-        x_norm = (x - x_min) / (x_max - x_min + 1e-8)
-        return x_norm.clamp(0, 1)
+        if x.shape[-2:] != self.padded_hw:
+            raise ValueError(f"forward_padded expects spatial shape {self.padded_hw}, got {tuple(x.shape[-2:])}")
+        X = torch.fft.fft2(x, dim=(-2, -1))
+        Y = X * self.otf  # broadcast over B
+        y_full = torch.fft.ifft2(Y, dim=(-2, -1)).real
+        return self.mask * self._center_crop(y_full)
+
+    def adjoint_padded(self, y: torch.Tensor) -> torch.Tensor:
+        """
+        Reference A*(y): sensor [B,C,H,W] -> padded/object space [B,C,Hp,Wp].
+        """
+        if y.shape[-2:] != self.im_hw:
+            raise ValueError(f"adjoint_padded expects spatial shape {self.im_hw}, got {tuple(y.shape[-2:])}")
+        y_pad = self._center_embed(self.mask * y)
+        Y = torch.fft.fft2(y_pad, dim=(-2, -1))
+        X = Y * torch.conj(self.otf)
+        return torch.fft.ifft2(X, dim=(-2, -1)).real
+
+    def forward_linear(self, x: torch.Tensor) -> torch.Tensor:
+        """Unnormalized same-size linear operator: sensor/image space -> sensor space."""
+        if x.shape[-2:] != self.im_hw:
+            raise ValueError(
+                f"forward_linear expects spatial shape {self.im_hw}, got {tuple(x.shape[-2:])}. "
+                "Use forward_padded for padded/object-space inputs."
+            )
+        return self.forward_padded(self._center_embed(x))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,C,H,W]
-        X = torch.fft.fft2(self._center_embed(x))
-        Y = X * self.otf  # broadcast over B
-        y_full = torch.fft.ifft2(Y).real
-        y_full = torch.fft.ifftshift(y_full, dim=(-2, -1))
-        return self._normalize(self._center_crop(y_full))
+        # Practical same-size API: normalize H(x) to match image-like [0,1] measurements.
+        y = self.forward_linear(x)
+        if self.normalize_output:
+            y = self._max_normalize_and_clip(y)
+        return y
 
     def adjoint(self, y: torch.Tensor) -> torch.Tensor:
         """
-        Adjoint of forward:
-        - Center-embed y on the full grid
-        - Apply convolution with the flipped kernel via conj(otf)
-        - Undo the forward's ifftshift with fftshift
-        - Center-crop back to image size
+        Exact adjoint of the same-size ``forward_linear`` operator.
         """
-        Y = torch.fft.fft2(self._center_embed(y))
-        X = Y * torch.conj(self.otf)
-        x_full = torch.fft.ifft2(X).real
-        x_full = torch.fft.fftshift(x_full, dim=(-2, -1))
-        return self._normalize(self._center_crop(x_full))
+        return self._center_crop(self.adjoint_padded(y))
+
+
+# Backward-compatible name used by older analysis scripts.
+FFTConvOperator = FFTLinearConvOperator

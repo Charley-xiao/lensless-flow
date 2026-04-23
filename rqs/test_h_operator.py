@@ -55,7 +55,7 @@ def main(args):
         x_rand = torch.randn((1, channels, *im_hw), device=device, dtype=y0.dtype)
         y_rand = torch.randn((1, channels, *im_hw), device=device, dtype=y0.dtype)
 
-        Ax = Hop.forward(x_rand)
+        Ax = Hop.forward_linear(x_rand)
         Aty = Hop.adjoint(y_rand)
 
         lhs = torch.vdot(Ax.reshape(-1), y_rand.reshape(-1))
@@ -77,6 +77,7 @@ def main(args):
     peak_y, peak_x = _peak_location(y_mag[0])
 
     print("----------------------------")
+    print(f"normalized H(delta) range: [{y_delta.min().item():.3e}, {y_delta.max().item():.3e}]")
     print(f"delta peak location in measurement: ({peak_y}, {peak_x})")
     print(f"measurement center: ({center_y}, {center_x})")
     print(f"max_relative_error: {max_rel_err:.3e}")
