@@ -12,7 +12,7 @@ data:
 
 train:
   mode: "vanilla" # "vanilla" or "btb"
-  batch_size: 32
+  batch_size: 8
   lr: 2.0e-4
   epochs: 200
   grad_clip: 1.0
@@ -21,14 +21,10 @@ train:
   save_since_epoch: 0.5
 
 model:
-  name: "nafnet"
-  base_channels: 32
+  name: "unet"
+  base_channels: 64
   channel_mults: [1, 2, 4, 8]
-  num_res_blocks: 2
-  middle_blocks: 6
-  dw_expand: 2
-  ffn_expand: 2
-  dropout: 0.0
+  num_res_blocks: 3
   use_time_conditioning: true  # set false to ignore t in vanilla v-pred; incompatible with btb / x-pred
 
 cfm:
