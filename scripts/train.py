@@ -23,7 +23,7 @@ from lensless_flow.flow_matching import (
 from lensless_flow.losses import cfm_loss, physics_loss_from_v
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
-from lensless_flow.metrics import ssim_torch, psnr
+from lensless_flow.metrics import psnr, ssim
 
 
 def chw_to_wandb_image(x_bchw: torch.Tensor):
@@ -88,7 +88,7 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         psnr_list.append(psnr(x_hat_c, x_c))
 
         # SSIM computed in float32 for numerical stability
-        ssim_val = float(ssim_torch(x_hat_c.float(), x_c.float(), window_size=ws, sigma=sigma, data_range=data_range).item())
+        ssim_val = float(ssim(x_hat_c.float(), x_c.float(), window_size=ws, sigma=sigma, data_range=data_range).item())
         ssim_list.append(ssim_val)
 
         dc_err = (Hop.forward(x_hat.float()) - y.float()).pow(2).mean().sqrt().item()

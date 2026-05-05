@@ -8,6 +8,7 @@ matplotlib
 scipy
 scikit-learn
 lpips
+piq
 torchmetrics
 torch-fidelity
 # lensless

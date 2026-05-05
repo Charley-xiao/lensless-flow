@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from lensless_flow.config import load_config, merge_config
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
-from lensless_flow.metrics import psnr, ssim_torch
+from lensless_flow.metrics import psnr, ssim
 from lensless_flow.model_factory import build_flow_model, load_checkpoint_state_dict, resolve_model_name
 from lensless_flow.model_unet import resolve_use_time_conditioning
 from lensless_flow.physics import FFTLinearConvOperator
@@ -286,7 +286,7 @@ def main(args, overrides: list[str]):
             for sample_idx in range(x_up.shape[0]):
                 psnr_value = float(psnr(x_up[sample_idx : sample_idx + 1], x_full_c[sample_idx : sample_idx + 1]))
                 ssim_value = float(
-                    ssim_torch(x_up[sample_idx : sample_idx + 1], x_full_c[sample_idx : sample_idx + 1]).item()
+                    ssim(x_up[sample_idx : sample_idx + 1], x_full_c[sample_idx : sample_idx + 1]).item()
                 )
                 lpips_value = float(lpips_values[sample_idx].item())
 

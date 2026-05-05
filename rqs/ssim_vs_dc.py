@@ -10,7 +10,7 @@ from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
-from lensless_flow.metrics import ssim_torch
+from lensless_flow.metrics import ssim
 
 
 def _infer_mode(state: dict, fallback: str = "btb") -> str:
@@ -126,7 +126,7 @@ def eval_avg_ssim_for_dc_steps(
 
             x_hat_c = x_hat.clamp(0, 1)
             x_c = x.clamp(0, 1)
-            s = float(ssim_torch(x_hat_c, x_c))
+            s = float(ssim(x_hat_c, x_c))
             ssim_list.append(s)
             pbar.set_postfix(ssim=f"{s:.4f}")
 
