@@ -13,6 +13,8 @@ except ImportError as exc:
         "Install it with `pip install torchcfm` or `pip install -r requirements.txt`."
     ) from exc
 
+from lensless_flow.measurement_source import sample_flow_source
+
 
 SUPPORTED_FLOW_MATCHERS = ("rectified", "ot_cfm")
 
@@ -24,6 +26,9 @@ class FlowMatchSample:
     v_target: torch.Tensor
     y_cond: torch.Tensor
     matcher_name: str
+    x_source: torch.Tensor | None = None
+    x_init: torch.Tensor | None = None
+    source_mode: str = "gaussian"
 
 
 def normalize_flow_matcher_name(name: str | None) -> str:
@@ -83,6 +88,10 @@ def sample_flow_matching_training_batch(
     t: torch.Tensor,
     flow_matcher,
     noise_std: float = 1.0,
+    H=None,
+    source_mode: str = "gaussian",
+    source_init: str = "adjoint",
+    source_init_normalize: str = "max",
 ) -> FlowMatchSample:
     """
     Sample a deterministic straight-line CFM training tuple using TorchCFM.
@@ -90,6 +99,15 @@ def sample_flow_matching_training_batch(
     `rectified` keeps the independent noise-data pairing, while `ot_cfm`
     replaces that pairing with TorchCFM's exact minibatch OT coupling and moves
     the conditioning measurement alongside the matched target image.
+
+    If `source_mode='measurement_initialized'`, use the measurement-conditioned
+    source requested by the robust bridge variant:
+        x_init = P(y, H_nominal)
+        z_y = x_init + sigma0 * eps
+        x_t = (1 - t) * z_y + t * x_gt
+        v_t = x_gt - z_y
+    In this mode we preserve each measurement/target pairing and bypass OT
+    rematching because the source distribution is conditional on y.
     """
     matcher_name = getattr(flow_matcher, "lensless_flow_name", None)
     if matcher_name is None:
@@ -100,7 +118,29 @@ def sample_flow_matching_training_batch(
         else:
             raise TypeError(f"Unsupported flow_matcher type: {type(flow_matcher)!r}")
     matcher_name = normalize_flow_matcher_name(matcher_name)
-    x_source = torch.randn_like(x_target) * noise_std
+    source = sample_flow_source(
+        y=y_cond,
+        H=H,
+        mode=source_mode,
+        noise_std=noise_std,
+        init_method=source_init,
+        init_normalize=source_init_normalize,
+        x_like=x_target,
+    )
+    x_source = source.x_source
+
+    if source.source_mode == "measurement_initialized":
+        t_img = t[:, None, None, None]
+        return FlowMatchSample(
+            t=t,
+            x_t=(1.0 - t_img) * x_source + t_img * x_target,
+            v_target=x_target - x_source,
+            y_cond=y_cond,
+            matcher_name=matcher_name,
+            x_source=x_source,
+            x_init=source.x_init,
+            source_mode=source.source_mode,
+        )
 
     if matcher_name == "ot_cfm":
         t_out, x_t, v_target, _, y_matched = flow_matcher.guided_sample_location_and_conditional_flow(
@@ -126,6 +166,9 @@ def sample_flow_matching_training_batch(
         v_target=v_target,
         y_cond=y_matched,
         matcher_name=matcher_name,
+        x_source=x_source,
+        x_init=source.x_init,
+        source_mode=source.source_mode,
     )
 
 

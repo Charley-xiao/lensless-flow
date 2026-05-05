@@ -11,6 +11,7 @@ from lensless_flow.model_factory import (
     build_baseline_unet as build_baseline_unet_model,
     build_flow_model as build_flow_model_impl,
 )
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -145,7 +146,8 @@ def load_flow_runner(
         if disable_physics_override is not None
         else cfg.get("physics", {}).get("disable_in_eval", False)
     )
-    init_noise_std = float(cfg["sample"]["init_noise_std"])
+    init_noise_std = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
 
     @torch.no_grad()
@@ -163,6 +165,7 @@ def load_flow_runner(
             disable_physics=disable_physics,
             pred_type=pred_type,
             dc_mode="rgb",
+            **source_kwargs,
         )
 
     return _runner

@@ -16,6 +16,7 @@ from lensless_flow.config import load_config, merge_config
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.metrics import psnr, ssim_torch
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.model_factory import build_flow_model, load_checkpoint_state_dict, resolve_model_name
 from lensless_flow.model_unet import resolve_use_time_conditioning
 from lensless_flow.physics import FFTLinearConvOperator
@@ -218,7 +219,8 @@ def main(args, overrides: list[str]):
     )
 
     steps = int(args.steps if args.steps is not None else cfg["sample"]["steps"])
-    init_noise_std = float(cfg["sample"].get("init_noise_std", 1.0))
+    init_noise_std = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
     disable_physics = bool(
         args.disable_physics
@@ -272,6 +274,7 @@ def main(args, overrides: list[str]):
             disable_physics=disable_physics,
             pred_type=pred_type,
             dc_mode="rgb",
+            **source_kwargs,
         )
 
         x_full_c = x_full.clamp(0, 1)

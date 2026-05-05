@@ -8,6 +8,7 @@ import torch
 
 from lensless_flow.config import load_config
 from lensless_flow.flow_matching import normalize_flow_matcher_name
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -100,6 +101,7 @@ def _sample_with_seed(
     pred_type: str,
     disable_physics: bool,
     latent_seed: int,
+    source_kwargs: dict,
 ):
     trajectory = []
     cpu_state, cuda_states = capture_rng_state()
@@ -121,6 +123,7 @@ def _sample_with_seed(
             pred_type=pred_type,
             dc_mode="rgb",
             trajectory=trajectory,
+            **source_kwargs,
         )
     finally:
         restore_rng_state(cpu_state, cuda_states)
@@ -328,7 +331,8 @@ def main(args, cfg):
     )
 
     steps = int(args.steps if args.steps is not None else cfg["sample"]["steps"])
-    init_noise_std = float(cfg["sample"]["init_noise_std"])
+    init_noise_std = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
 
     cfg_dc_steps = int(cfg.get("physics", {}).get("dc_steps", 0))
@@ -363,6 +367,7 @@ def main(args, cfg):
             pred_type=pred_type,
             disable_physics=True,
             latent_seed=latent_seed,
+            source_kwargs=source_kwargs,
         )
         _, guided_traj = _sample_with_seed(
             model=model,
@@ -376,6 +381,7 @@ def main(args, cfg):
             pred_type=pred_type,
             disable_physics=False,
             latent_seed=latent_seed,
+            source_kwargs=source_kwargs,
         )
 
         no_physics_rows = _compute_trajectory_rows(

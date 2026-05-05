@@ -12,6 +12,7 @@ from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_factory import build_flow_model, resolve_model_name
 from lensless_flow.model_unet import resolve_use_time_conditioning
 from lensless_flow.flow_matching import normalize_flow_matcher_name
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 
@@ -98,7 +99,8 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # Sampling settings
     # -------------------------
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
-    init_noise_std = float(cfg.get("sample", {}).get("init_noise_std", 1.0))
+    init_noise_std = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
 
     # Decide physics usage for sampling
     # Default: follow cfg.physics.disable_in_eval
@@ -148,7 +150,8 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
                 clamp_x=False,
                 disable_physics=disable_physics,
                 pred_type=pred_type,
-                dc_mode="rgb"
+                dc_mode="rgb",
+                **source_kwargs,
             )
             recons.append((s, x_hat))
 
