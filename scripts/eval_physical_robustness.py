@@ -17,6 +17,7 @@ from scripts._paper_eval_utils import (
     compute_metrics,
     effective_batch_size,
     load_flow_runner,
+    load_updn_runner,
     load_unet_runner,
     maybe_import_pyplot,
     parse_float_list,
@@ -25,15 +26,21 @@ from scripts._paper_eval_utils import (
     run_with_latent_seed,
     samplewise_range,
     samplewise_rms,
+    UPDN_MODEL_SPECS,
     zero_fill_shift,
 )
 
 
+METHOD_ORDER = ("v_prediction", "x_prediction", "unet", "updn")
 METHOD_LABELS = {
     "v_prediction": "v-prediction",
     "x_prediction": "x-prediction",
     "unet": "baseline U-Net",
+    "updn": "UPDN",
 }
+DEFAULT_UPDN_REPO = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "lensless-primal-dual")
+)
 
 
 def _write_csv(path: str, rows: list[dict], fieldnames: list[str]) -> None:
@@ -74,6 +81,35 @@ def _shift_from_level(level: int, axis: str) -> tuple[int, int]:
     if axis == "diag":
         return int(level), int(level)
     raise ValueError(f"Unknown shift axis: {axis}")
+
+
+def _resolve_updn_ckpt(args) -> str:
+    if args.updn_ckpt:
+        return args.updn_ckpt
+    filename = (
+        "image_optimizer_colors.ckpt"
+        if args.updn_model == "learned-primal-dual-and-color-mixing"
+        else "image_optimizer.ckpt"
+    )
+    return os.path.join(args.updn_repo, "weights", filename)
+
+
+def _should_include_updn(args) -> bool:
+    return bool(args.include_updn or args.updn_ckpt)
+
+
+def _ordered_methods(rows: list[dict]) -> list[str]:
+    present = {row["method"] for row in rows}
+    ordered = [method for method in METHOD_ORDER if method in present]
+    ordered.extend(sorted(present.difference(ordered)))
+    return ordered
+
+
+def _method_rank(method_name: str) -> int:
+    try:
+        return METHOD_ORDER.index(method_name)
+    except ValueError:
+        return len(METHOD_ORDER)
 
 
 def _poisson_corrupt(y: torch.Tensor, peak: int, seed: int, clamp_output: bool) -> torch.Tensor:
@@ -243,7 +279,7 @@ def _plot_summary(summary_rows: list[dict], out_path: str) -> str | None:
             if row["level_label"] not in level_order:
                 level_order.append(row["level_label"])
 
-        for method_name in ["v_prediction", "x_prediction", "unet"]:
+        for method_name in _ordered_methods(rows):
             method_rows = sorted(
                 [row for row in rows if row["method"] == method_name],
                 key=lambda r: int(r["severity_rank"]),
@@ -251,9 +287,10 @@ def _plot_summary(summary_rows: list[dict], out_path: str) -> str | None:
             if not method_rows:
                 continue
             xs = list(range(len(method_rows)))
-            axes[0, col].plot(xs, [float(r["noisy_ssim"]) for r in method_rows], marker="o", label=METHOD_LABELS[method_name])
-            axes[1, col].plot(xs, [float(r["noisy_psnr"]) for r in method_rows], marker="o", label=METHOD_LABELS[method_name])
-            axes[2, col].plot(xs, [float(r["noisy_mse"]) for r in method_rows], marker="o", label=METHOD_LABELS[method_name])
+            label = METHOD_LABELS.get(method_name, method_name)
+            axes[0, col].plot(xs, [float(r["noisy_ssim"]) for r in method_rows], marker="o", label=label)
+            axes[1, col].plot(xs, [float(r["noisy_psnr"]) for r in method_rows], marker="o", label=label)
+            axes[2, col].plot(xs, [float(r["noisy_mse"]) for r in method_rows], marker="o", label=label)
 
         for row_idx, title in enumerate(["SSIM", "PSNR", "MSE"]):
             axes[row_idx, col].set_title(f"{corruption}: {title}")
@@ -309,6 +346,17 @@ def main(args, flow_cfg, unet_cfg):
             device=device,
         ),
     }
+    include_updn = _should_include_updn(args)
+    updn_ckpt = _resolve_updn_ckpt(args)
+    if include_updn:
+        methods["updn"] = load_updn_runner(
+            repo_path=args.updn_repo,
+            ckpt_path=updn_ckpt,
+            model_name=args.updn_model,
+            psf=psf,
+            device=device,
+            disable_unet=args.updn_disable_unet,
+        )
 
     corruption_levels = _corruption_levels(args)
     corruptions = _parse_corruption_list(args.corruptions)
@@ -470,8 +518,24 @@ def main(args, flow_cfg, unet_cfg):
                     }
                 )
 
-    summary_rows.sort(key=lambda row: (row["corruption"], int(row["severity_rank"]), row["method"]))
-    per_sample_rows.sort(key=lambda row: (row["sample_id"], row["corruption"], int(row["severity_rank"]), row["method"], row["repeat"]))
+    summary_rows.sort(
+        key=lambda row: (
+            row["corruption"],
+            int(row["severity_rank"]),
+            _method_rank(row["method"]),
+            row["method"],
+        )
+    )
+    per_sample_rows.sort(
+        key=lambda row: (
+            row["sample_id"],
+            row["corruption"],
+            int(row["severity_rank"]),
+            _method_rank(row["method"]),
+            row["method"],
+            row["repeat"],
+        )
+    )
 
     summary_csv = os.path.join(args.out_dir, "physical_robustness_summary.csv")
     per_sample_csv = os.path.join(args.out_dir, "physical_robustness_per_sample.csv")
@@ -536,6 +600,11 @@ def main(args, flow_cfg, unet_cfg):
                 "v_ckpt": os.path.abspath(args.v_ckpt),
                 "x_ckpt": os.path.abspath(args.x_ckpt),
                 "unet_ckpt": os.path.abspath(args.unet_ckpt),
+                "updn_enabled": include_updn,
+                "updn_repo": os.path.abspath(args.updn_repo),
+                "updn_ckpt": os.path.abspath(updn_ckpt) if include_updn else None,
+                "updn_model": args.updn_model if include_updn else None,
+                "updn_denoise": (not args.updn_disable_unet) if include_updn else None,
                 "device": str(device),
                 "batch_size": batch_size,
                 "num_workers": args.num_workers,
@@ -595,6 +664,22 @@ if __name__ == "__main__":
     ap.add_argument("--x_ckpt", type=str, required=True)
     ap.add_argument("--unet_ckpt", type=str, required=True)
     ap.add_argument("--unet_config", type=str, default=None)
+    ap.add_argument("--include_updn", action="store_true", help="Include the UPDN baseline from --updn_repo.")
+    ap.add_argument("--updn_repo", type=str, default=DEFAULT_UPDN_REPO, help="Path to the lensless-primal-dual repo.")
+    ap.add_argument(
+        "--updn_ckpt",
+        type=str,
+        default=None,
+        help="UPDN checkpoint. Defaults to weights/image_optimizer*.ckpt in --updn_repo.",
+    )
+    ap.add_argument(
+        "--updn_model",
+        type=str,
+        default="learned-primal-dual-and-five-models",
+        choices=sorted(UPDN_MODEL_SPECS),
+        help="UPDN architecture/checkpoint family to load.",
+    )
+    ap.add_argument("--updn_disable_unet", action="store_true", help="Disable UPDN's internal U-Net denoiser.")
     ap.add_argument(
         "--corruptions",
         type=str,
