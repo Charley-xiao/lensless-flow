@@ -12,7 +12,7 @@ from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.model_unet import SimpleCondUNet
 from lensless_flow.tensor_utils import to_nchw
-from lensless_flow.metrics import psnr, ssim
+from lensless_flow.metrics import psnr, ssim_torch
 
 
 @torch.no_grad()
@@ -31,10 +31,9 @@ def eval_loop(model, dl, device, max_batches=0):
         t = torch.zeros(b, device=device) if getattr(model, "use_time_conditioning", True) else None
 
         x_hat = model(x_t, y, t).clamp(0, 1)
-        x_c = x.clamp(0, 1)
-        psnrs += psnr(x_hat, x_c)
-        ssims += float(ssim(x_hat, x_c).item())
-        mses.append(F.mse_loss(x_hat, x_c).item())
+        psnrs += psnr(x_hat, x)
+        ssims += float(ssim_torch(x_hat, x).item())
+        mses.append(F.mse_loss(x_hat, x).item())
         n += 1
     model.train()
     return {"eval/psnr": psnrs / max(n, 1), "eval/ssim": ssims / max(n, 1), "eval/mse": sum(mses) / max(n, 1)}

@@ -10,7 +10,7 @@ import torch.nn as nn
 from lensless_flow.config import load_config
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
-from lensless_flow.metrics import psnr, ssim
+from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.model_factory import (
     build_baseline_unet as build_baseline_unet_model,
     build_flow_model as build_flow_model_impl,
@@ -302,7 +302,7 @@ def main(
 
             mse_values = _per_sample_mse(x_hat_c, x_c)
             psnr_values = [float(psnr(x_hat_c[j : j + 1], x_c[j : j + 1])) for j in range(x.shape[0])]
-            ssim_values = [float(ssim(x_hat_c[j : j + 1], x_c[j : j + 1])) for j in range(x.shape[0])]
+            ssim_values = [float(ssim_torch(x_hat_c[j : j + 1], x_c[j : j + 1])) for j in range(x.shape[0])]
             dc_values = _per_sample_dc_rmse(Hop, x_hat, y)
             lpips_values = lpips_metric(_prepare_lpips_input(x_hat_c), x_lpips).reshape(-1)
 

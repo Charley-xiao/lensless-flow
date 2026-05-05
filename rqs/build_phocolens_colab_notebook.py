@@ -144,7 +144,6 @@ cells.append(
             "omegaconf==2.1.1",
             "open_clip_torch==2.0.2",
             "opencv-python-headless==4.8.1.78",
-            "piq",
             "protobuf==3.20.3",
             "pytorch-lightning==1.4.2",
             "recordclass",
@@ -1011,12 +1010,13 @@ cells.append(
     code(
         """
         import json
+        import math
 
         import lpips
         import numpy as np
-        import piq
         import torch
         from PIL import Image
+        from skimage.metrics import structural_similarity as ssim
         from torchmetrics.image.fid import FrechetInceptionDistance
         from torchvision.transforms.functional import resize
         from tqdm.auto import tqdm
@@ -1054,9 +1054,6 @@ cells.append(
         def to_lpips_tensor(image_hwc):
             return torch.from_numpy(image_hwc).permute(2, 0, 1).unsqueeze(0).to(device).mul(2.0).sub(1.0)
 
-        def to_metric_tensor(image_hwc):
-            return torch.from_numpy(image_hwc).permute(2, 0, 1).unsqueeze(0).to(device)
-
         def to_fid_tensor(image_hwc):
             return torch.from_numpy(np.clip(np.round(image_hwc * 255.0), 0, 255).astype(np.uint8)).permute(2, 0, 1).unsqueeze(0).to(device)
 
@@ -1066,11 +1063,9 @@ cells.append(
             for stem in tqdm(stems, desc="Evaluate"):
                 pred = loader(stem)
                 gt = load_gt(stem)
-                pred_metric = to_metric_tensor(pred)
-                gt_metric = to_metric_tensor(gt)
-                mse = float(torch.mean((pred_metric - gt_metric) ** 2).item())
-                psnr = float(piq.psnr(pred_metric, gt_metric, data_range=1.0).item())
-                ssim_val = float(piq.ssim(pred_metric, gt_metric, data_range=1.0, downsample=False).item())
+                mse = float(np.mean((pred - gt) ** 2))
+                psnr = 10.0 * math.log10(1.0 / max(mse, 1.0e-12))
+                ssim_val = float(ssim(gt, pred, channel_axis=-1, data_range=1.0))
                 lpips_val = float(lpips_fn(to_lpips_tensor(pred), to_lpips_tensor(gt)).mean().item())
 
                 totals["PSNR"] += psnr
@@ -1357,14 +1352,15 @@ cells.append(
             import cv2
             import lpips
             import numpy as np
-            import piq
             import torch
             import torch.nn.functional as F
             from sacred import Experiment
+            from skimage.metrics import structural_similarity as ssim
             from tqdm import tqdm
 
             from config import initialise
             from dataloader import get_dataloaders
+            from metrics import PSNR
             from models import get_model
             from utils.ops import unpixel_shuffle
             from utils.train_helper import AvgLoss_with_dict, load_models
@@ -1419,15 +1415,13 @@ cells.append(
                         output_unpixel_shuffled = G(unpixel_shuffle(fft_output, args.pixelshuffle_ratio))
                         output = F.pixel_shuffle(output_unpixel_shuffled, args.pixelshuffle_ratio)
                         metrics_dict["Time"] = time.time() - start_time
-                        output_metric = output.mul(0.5).add(0.5).clamp(0, 1)
-                        target_metric = target.mul(0.5).add(0.5).clamp(0, 1)
-                        metrics_dict["PSNR"] = piq.psnr(output_metric, target_metric, data_range=1.0).item()
+                        metrics_dict["PSNR"] = PSNR(output, target).item()
                         metrics_dict["LPIPS"] = lpips_criterion(output, target).mean().item()
-                        metrics_dict["SSIM"] = piq.ssim(output_metric, target_metric, data_range=1.0, downsample=False).item()
 
-                        output_np = output_metric[0].permute(1, 2, 0).cpu().numpy()
-                        target_np = target_metric[0].permute(1, 2, 0).cpu().numpy()
+                        output_np = output[0].mul(0.5).add(0.5).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+                        target_np = target[0].mul(0.5).add(0.5).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                         fft_np = fft_output[0][:3].mul(0.5).add(0.5).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+                        metrics_dict["SSIM"] = ssim(target_np, output_np, channel_axis=-1, data_range=1.0)
 
                         stem = str(filename[0])
                         cv2.imwrite(str(output_path / f"{stem}.png"), (output_np[:, :, ::-1] * 255.0).astype(np.uint8))

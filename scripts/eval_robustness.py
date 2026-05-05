@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from lensless_flow.config import load_config
 from lensless_flow.data import make_dataloader
-from lensless_flow.metrics import psnr, ssim
+from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.model_factory import (
     build_baseline_unet as build_baseline_unet_model,
     build_flow_model as build_flow_model_impl,
@@ -160,7 +160,7 @@ def _compute_metrics(x_hat: torch.Tensor, x: torch.Tensor) -> dict[str, float]:
     return {
         "mse": float((x_hat_c - x_c).pow(2).mean().item()),
         "psnr": float(psnr(x_hat_c, x_c)),
-        "ssim": float(ssim(x_hat_c, x_c)),
+        "ssim": float(ssim_torch(x_hat_c, x_c)),
     }
 
 

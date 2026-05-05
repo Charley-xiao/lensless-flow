@@ -8,7 +8,7 @@ import torch
 
 from lensless_flow.config import load_config
 from lensless_flow.flow_matching import normalize_flow_matcher_name
-from lensless_flow.metrics import psnr, ssim
+from lensless_flow.metrics import psnr, ssim_torch
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.utils import ensure_dir
@@ -155,7 +155,7 @@ def _compute_trajectory_rows(
                     lpips_metric(_prepare_lpips_input(state_clamped), x_gt_lpips).reshape(-1)[0].item()
                 ),
                 "psnr": float(psnr(state_clamped, x_gt_clamped)),
-                "ssim": float(ssim(state_clamped, x_gt_clamped)),
+                "ssim": float(ssim_torch(state_clamped, x_gt_clamped)),
                 "dc_rmse": float(residual.pow(2).mean().sqrt().item()),
             }
         )
