@@ -8,6 +8,7 @@ from lensless_flow.config import load_config
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
 from lensless_flow.flow_matching import normalize_flow_matcher_name
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.model_factory import build_flow_model, resolve_model_name
 from lensless_flow.model_unet import resolve_use_time_conditioning
@@ -106,7 +107,8 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
 
     # Sampling settings
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
-    init_noise_std = float(cfg.get("sample", {}).get("init_noise_std", 1.0))
+    init_noise_std = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
 
     disable_physics = bool(cfg.get("physics", {}).get("disable_in_eval", False))
     if disable_physics_override is not None:
@@ -154,6 +156,7 @@ def main(cfg, idxs: list[int], ckpt: str, steps: int, seed: int | None, disable_
                 disable_physics=disable_physics,
                 pred_type=pred_type,
                 dc_mode="rgb",
+                **source_kwargs,
             )
 
         gt_path = os.path.join(out_dir, f"idx_{idx:05d}_gt.png")

@@ -1,5 +1,7 @@
 import torch
 
+from lensless_flow.measurement_source import sample_flow_source
+
 
 def _model_uses_time_conditioning(model) -> bool:
     wrapped = getattr(model, "_orig_mod", model)
@@ -68,6 +70,9 @@ def sample_with_physics_guidance(
     dc_mode: str = "rgb",    # deprecated
     solver: str = "heun",    # "heun" (rk2) or "euler" (rk1)
     trajectory: list[dict] | None = None,
+    source_mode: str = "gaussian",
+    source_init: str = "adjoint",
+    source_init_normalize: str = "max",
 ):
     """
     ODE sampling with optional physics-guided data-consistency (DC).
@@ -110,8 +115,17 @@ def sample_with_physics_guidance(
     device = y.device
     B = y.shape[0]
 
-    # initial state z0 ~ N(0, I)
-    z = init_noise_std * torch.randn_like(y)
+    # initial state z0. By default this is Gaussian noise. Robust bridge
+    # variants can start from z_y = P(y, H_nominal) + sigma0 * eps.
+    source = sample_flow_source(
+        y=y,
+        H=H,
+        mode=source_mode,
+        noise_std=init_noise_std,
+        init_method=source_init,
+        init_normalize=source_init_normalize,
+    )
+    z = source.x_source
 
     # time grid
     ts = torch.linspace(0.0, 1.0, steps + 1, device=device, dtype=y.dtype)

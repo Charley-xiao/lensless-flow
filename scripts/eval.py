@@ -16,6 +16,7 @@ from lensless_flow.model_factory import (
     build_flow_model as build_flow_model_impl,
     load_checkpoint_state_dict,
 )
+from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.physics import FFTLinearConvOperator
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
@@ -217,7 +218,8 @@ def main(
     _load_state_dict(flow_model, flow_state)
 
     steps = int(flow_cfg["sample"]["steps"])
-    init_noise_std = float(flow_cfg["sample"]["init_noise_std"])
+    init_noise_std = source_sigma0_from_cfg(flow_cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(flow_cfg)
     denom_min = float(flow_cfg.get("btb", {}).get("denom_min", 0.05))
     disable_physics = bool(flow_cfg.get("physics", {}).get("disable_in_eval", False))
     dc_steps = int(flow_cfg.get("physics", {}).get("dc_steps", 0))
@@ -239,6 +241,7 @@ def main(
                 disable_physics=disable_physics,
                 pred_type=pred_type,
                 dc_mode=dc_mode,
+                **source_kwargs,
             ),
             "summary_lines": [
                 f"ckpt: {ckpt}",

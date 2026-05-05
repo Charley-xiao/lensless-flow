@@ -21,6 +21,11 @@ from lensless_flow.flow_matching import (
     sample_t,
 )
 from lensless_flow.losses import cfm_loss, physics_loss_from_v
+from lensless_flow.measurement_source import (
+    source_mode_from_cfg,
+    source_sampler_kwargs_from_cfg,
+    source_sigma0_from_cfg,
+)
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.metrics import ssim_torch, psnr
@@ -57,6 +62,8 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
     ws = int(ssim_cfg.get("window_size", 11))
     sigma = float(ssim_cfg.get("sigma", 1.5))
     data_range = float(ssim_cfg.get("data_range", 1.0))
+    source_sigma0 = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
 
     for i, (y, x) in enumerate(test_dl):
         if i >= max_batches:
@@ -72,11 +79,12 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
             steps=cfg["sample"]["steps"],
             dc_step=cfg["physics"]["dc_step_size"],
             dc_steps=cfg["physics"]["dc_steps"],
-            init_noise_std=cfg["sample"]["init_noise_std"],
+            init_noise_std=source_sigma0,
             denom_min=denom_min,
             clamp_x=False,
             disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
             pred_type=pred_type,
+            **source_kwargs,
         )
 
         # metrics in [0,1]
@@ -129,8 +137,12 @@ def main(cfg):
         )
     flow_matcher_name = normalize_flow_matcher_name(cfg.get("cfm", {}).get("matcher", "rectified"))
     flow_matcher = build_flow_matcher(flow_matcher_name)
+    source_mode = source_mode_from_cfg(cfg)
+    source_sigma0 = source_sigma0_from_cfg(cfg)
+    source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     time_tag = "tcond" if use_time_conditioning else "notime"
     print(f"Time conditioning: {use_time_conditioning}")
+    print(f"CFM source: {source_mode} (sigma0={source_sigma0})")
 
     # -------------------------
     # W&B init
@@ -139,7 +151,7 @@ def main(cfg):
     use_wandb = bool(wb.get("enabled", True))
     if use_wandb:
         wb_tags = list(wb.get("tags", []))
-        for tag in [pred_type, flow_matcher_name, time_tag, "cfm", "lensless"]:
+        for tag in [pred_type, flow_matcher_name, time_tag, f"src_{source_mode}", "cfm", "lensless"]:
             if tag not in wb_tags:
                 wb_tags.append(tag)
         wandb.init(
@@ -255,7 +267,9 @@ def main(cfg):
                 y_cond=y,
                 t=t,
                 flow_matcher=flow_matcher,
-                noise_std=cfg["sample"]["init_noise_std"],
+                noise_std=source_sigma0,
+                H=Hop,
+                **source_kwargs,
             )
             t = fm_batch.t
             x_t = fm_batch.x_t
@@ -336,9 +350,12 @@ def main(cfg):
                     "train/t_std": float(t.std(unbiased=False).item()),
                     "diag/x_t_rms": rms(x_t),
                     "diag/y_cond_rms": rms(y_cond),
+                    "diag/x_source_rms": rms(fm_batch.x_source) if fm_batch.x_source is not None else 0.0,
                     "diag/v_pred_rms": rms(v_pred),
                     "diag/nan_or_inf": float(nan_or_inf),
                 }
+                if fm_batch.x_init is not None:
+                    log_dict["diag/x_init_rms"] = rms(fm_batch.x_init)
                 if pred_type == "btb" and x_pred is not None:
                     log_dict["train/denom_min"] = float(denom_min)
                     log_dict["diag/x_pred_rms"] = rms(x_pred)
@@ -402,11 +419,12 @@ def main(cfg):
                 steps=cfg["sample"]["steps"],
                 dc_step=cfg["physics"]["dc_step_size"],
                 dc_steps=cfg["physics"]["dc_steps"],
-                init_noise_std=cfg["sample"]["init_noise_std"],
+                init_noise_std=source_sigma0,
                 denom_min=denom_min,
                 clamp_x=False,
                 disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
                 pred_type=pred_type,
+                **source_kwargs,
             )
 
             wandb.log(
@@ -428,6 +446,8 @@ def main(cfg):
                     "cfg": cfg,
                     "mode": pred_type,
                     "matcher": flow_matcher_name,
+                    "source_mode": source_mode,
+                    "source_sigma0": source_sigma0,
                     "model_name": model_name,
                     "use_time_conditioning": use_time_conditioning,
                 },
@@ -444,6 +464,8 @@ def main(cfg):
                         "C": C, "H": H_img, "W": W_img, 
                         "mode": pred_type,
                         "matcher": flow_matcher_name,
+                        "source_mode": source_mode,
+                        "source_sigma0": source_sigma0,
                         "model_name": model_name,
                         "use_time_conditioning": use_time_conditioning,
                         "denom_min": denom_min,
