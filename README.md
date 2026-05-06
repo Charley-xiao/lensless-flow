@@ -86,6 +86,49 @@ cfm:
   matcher: "rectified"  # or "ot_cfm"
 ```
 
+Init from $H^T(y)$:
+
+```yaml
+cfm:
+  matcher: "rectified" # "rectified" or "ot_cfm"
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0  # used for normalization choices (optional)
+  source:
+    mode: "measurement_initialized"  # "gaussian" or "measurement_initialized"
+    init: "adjoint"                  # P(y,H): normalized H^T y
+    normalize: "max"
+    sigma0: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0   # set 0 to disable physics loss during training
+```
+
+Init from ADMM:
+
+```yaml
+cfm:
+  matcher: "rectified" # "rectified" or "ot_cfm"
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0  # used for normalization choices (optional)
+  source:
+    mode: "measurement_initialized"  # "gaussian" or "measurement_initialized"
+    init: "admm"                     # P(y,H): coarse constrained ADMM initializer
+    normalize: "clamp"
+    sigma0: 1.0
+    admm:
+      steps: 100
+      inner_steps: 1
+      rho: 0.1
+      step_size: 0.001
+      start: "adjoint"
+      start_normalize: "max"
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0   # set 0 to disable physics loss during training
+```
+
 ## Sample / Visualize
 
 ```bash
