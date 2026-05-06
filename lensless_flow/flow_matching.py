@@ -92,6 +92,12 @@ def sample_flow_matching_training_batch(
     source_mode: str = "gaussian",
     source_init: str = "adjoint",
     source_init_normalize: str = "max",
+    source_admm_steps: int = 5,
+    source_admm_inner_steps: int = 1,
+    source_admm_rho: float = 0.1,
+    source_admm_step_size: float = 0.001,
+    source_admm_start: str = "adjoint",
+    source_admm_start_normalize: str = "max",
 ) -> FlowMatchSample:
     """
     Sample a deterministic straight-line CFM training tuple using TorchCFM.
@@ -106,6 +112,7 @@ def sample_flow_matching_training_batch(
         z_y = x_init + sigma0 * eps
         x_t = (1 - t) * z_y + t * x_gt
         v_t = x_gt - z_y
+    P can be a few constrained ADMM iterations when `source_init='admm'`.
     In this mode we preserve each measurement/target pairing and bypass OT
     rematching because the source distribution is conditional on y.
     """
@@ -126,6 +133,12 @@ def sample_flow_matching_training_batch(
         init_method=source_init,
         init_normalize=source_init_normalize,
         x_like=x_target,
+        admm_steps=source_admm_steps,
+        admm_inner_steps=source_admm_inner_steps,
+        admm_rho=source_admm_rho,
+        admm_step_size=source_admm_step_size,
+        admm_start=source_admm_start,
+        admm_start_normalize=source_admm_start_normalize,
     )
     x_source = source.x_source
 

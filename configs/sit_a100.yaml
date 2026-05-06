@@ -36,9 +36,16 @@ cfm:
   sigma_data: 1.0
   source:
     mode: "measurement_initialized"  # "gaussian" or "measurement_initialized"
-    init: "adjoint"                  # P(y,H): normalized H^T y
-    normalize: "max"
+    init: "admm"                     # P(y,H): coarse constrained ADMM initializer
+    normalize: "clamp"
     sigma0: 1.0
+    admm:
+      steps: 5
+      inner_steps: 1
+      rho: 0.1
+      step_size: 0.001
+      start: "adjoint"
+      start_normalize: "max"
   loss:
     v_weight: 1.0
     physics_weight: 0.0

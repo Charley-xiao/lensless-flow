@@ -73,6 +73,12 @@ def sample_with_physics_guidance(
     source_mode: str = "gaussian",
     source_init: str = "adjoint",
     source_init_normalize: str = "max",
+    source_admm_steps: int = 5,
+    source_admm_inner_steps: int = 1,
+    source_admm_rho: float = 0.1,
+    source_admm_step_size: float = 0.001,
+    source_admm_start: str = "adjoint",
+    source_admm_start_normalize: str = "max",
 ):
     """
     ODE sampling with optional physics-guided data-consistency (DC).
@@ -124,6 +130,12 @@ def sample_with_physics_guidance(
         noise_std=init_noise_std,
         init_method=source_init,
         init_normalize=source_init_normalize,
+        admm_steps=source_admm_steps,
+        admm_inner_steps=source_admm_inner_steps,
+        admm_rho=source_admm_rho,
+        admm_step_size=source_admm_step_size,
+        admm_start=source_admm_start,
+        admm_start_normalize=source_admm_start_normalize,
     )
     z = source.x_source
 
