@@ -38,7 +38,7 @@ cfm:
     normalize: "clamp"
     sigma0: 1.0
     admm:
-      steps: 5
+      steps: 100
       inner_steps: 1
       rho: 0.1
       step_size: 0.001
