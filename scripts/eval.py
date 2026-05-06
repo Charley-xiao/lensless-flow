@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+import time
 
 from tqdm import tqdm
 
@@ -157,6 +158,7 @@ def _print_method_summary(
     print(f"LPIPS avg: {_avg(stats['lpips']):.6f}")
     print(f"MSE avg: {_avg(stats['mse']):.8f}")
     print(f"Data-consistency RMSE avg: {_avg(stats['dc_rmse']):.6f}")
+    print(f"Generation time avg: {_avg(stats['gen_time_ms_per_sample']):.2f} ms/sample")
     if math.isnan(fid_value):
         print("FID: n/a (need at least 2 evaluated samples)")
     else:
@@ -278,7 +280,7 @@ def main(
     fid_metrics = {name: _build_fid_metric(device) for name in methods}
 
     stats = {
-        name: {"psnr": [], "ssim": [], "lpips": [], "mse": [], "dc_rmse": []}
+        name: {"psnr": [], "ssim": [], "lpips": [], "mse": [], "dc_rmse": [], "gen_time_ms_per_sample": []}
         for name in methods
     }
 
@@ -300,7 +302,13 @@ def main(
 
         batch_postfix = {}
         for method_name, method_cfg in methods.items():
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            start_time = time.perf_counter()
             x_hat = method_cfg["runner"](y)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elapsed_ms_per_sample = (time.perf_counter() - start_time) * 1000.0 / max(1, int(y.shape[0]))
             x_hat_c = x_hat.clamp(0, 1)
 
             mse_values = _per_sample_mse(x_hat_c, x_c)
@@ -314,11 +322,15 @@ def main(
             stats[method_name]["ssim"].extend(ssim_values)
             stats[method_name]["dc_rmse"].extend(dc_values.detach().cpu().tolist())
             stats[method_name]["lpips"].extend(lpips_values.detach().float().cpu().tolist())
+            stats[method_name]["gen_time_ms_per_sample"].extend(
+                [float(elapsed_ms_per_sample)] * int(y.shape[0])
+            )
 
             fid_metrics[method_name].update(x_fid, real=True)
             fid_metrics[method_name].update(_prepare_fid_input(x_hat_c), real=False)
 
             batch_postfix[_method_postfix_key(method_name)] = f"{_avg(psnr_values):.2f}"
+            batch_postfix[f"{method_name}_ms"] = f"{elapsed_ms_per_sample:.1f}"
 
         pbar.set_postfix(batch_postfix)
 
