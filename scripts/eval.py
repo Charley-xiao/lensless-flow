@@ -177,6 +177,7 @@ def main(
     unet_config_path: str | None,
     batch_size: int,
     num_workers: int,
+    solver_override: str | None,
 ):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
 
@@ -220,6 +221,7 @@ def main(
     _load_state_dict(flow_model, flow_state)
 
     steps = int(flow_cfg["sample"]["steps"])
+    solver = str(solver_override if solver_override is not None else flow_cfg.get("sample", {}).get("solver", "heun")).lower()
     init_noise_std = source_sigma0_from_cfg(flow_cfg)
     source_kwargs = source_sampler_kwargs_from_cfg(flow_cfg)
     denom_min = float(flow_cfg.get("btb", {}).get("denom_min", 0.05))
@@ -243,6 +245,7 @@ def main(
                 disable_physics=disable_physics,
                 pred_type=pred_type,
                 dc_mode=dc_mode,
+                solver=solver,
                 **source_kwargs,
             ),
             "summary_lines": [
@@ -250,6 +253,7 @@ def main(
                 f"pred_type: {pred_type}",
                 f"matcher: {flow_matcher_name}",
                 f"steps: {steps}",
+                f"solver: {solver}",
                 f"DC: {'disabled' if disable_physics else (dc_mode + f' (dc_steps={dc_steps}, dc_step={dc_step})')}",
             ],
         }
@@ -371,6 +375,7 @@ if __name__ == "__main__":
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--max_batches", type=int, default=200)
+    ap.add_argument("--solver", type=str, default=None, choices=["heun", "euler"], help="Override cfg.sample.solver.")
     args, overrides = ap.parse_known_args()
     flow_cfg = load_config(args.config, overrides)
     unet_cfg = load_config(args.unet_config, overrides) if args.unet_config is not None else flow_cfg
@@ -388,4 +393,5 @@ if __name__ == "__main__":
         unet_config_path=args.unet_config,
         batch_size=max(1, int(args.batch_size)),
         num_workers=max(0, int(args.num_workers)),
+        solver_override=args.solver,
     )

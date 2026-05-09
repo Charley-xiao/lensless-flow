@@ -149,6 +149,7 @@ def load_flow_runner(
     init_noise_std = source_sigma0_from_cfg(cfg)
     source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
+    solver = str(cfg.get("sample", {}).get("solver", "heun")).lower()
 
     @torch.no_grad()
     def _runner(y: torch.Tensor, Hop: FFTLinearConvOperator) -> torch.Tensor:
@@ -165,6 +166,7 @@ def load_flow_runner(
             disable_physics=disable_physics,
             pred_type=pred_type,
             dc_mode="rgb",
+            solver=solver,
             **source_kwargs,
         )
 

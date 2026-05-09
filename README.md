@@ -129,6 +129,153 @@ cfm:
     physics_weight: 0.0   # set 0 to disable physics loss during training
 ```
 
+## One-step distillation
+
+The strongest full model can be too slow at inference because a 40-step Heun sampler uses roughly 80 U-Net evaluations per reconstruction. The distillation pipeline trains a student that keeps the same conditional v-prediction interface but is evaluated with one Euler step:
+
+```python
+z0 ~ N(0, sigma0)
+v_student = student(z0, y, t=0)
+x_hat = z0 + v_student
+```
+
+This is true 1-NFE generation when evaluated with `sample.steps=1` and `sample.solver=euler`.
+
+### Why train in two phases?
+
+The two `train_distill` runs are recommended, not mathematically required.
+
+The first run, `--phase reflow`, teaches the student the whole teacher-induced straight-line flow. For each cached teacher pair `(z0, x_teacher)`, it samples random times and trains on:
+
+```python
+x_t = (1 - t) * z0 + t * x_teacher
+v_target = x_teacher - z0
+```
+
+This is easier than immediately forcing the model to be perfect at only `t=0`, and it makes the vector field more self-consistent across the path.
+
+The second run, `--phase one_step`, fine-tunes exactly the deployment case:
+
+```python
+t = 0
+x_1step = z0 + student(z0, y, 0)
+```
+
+This removes the train-test mismatch left by reflow training. In practice, `reflow -> one_step` is usually more stable than direct one-step training. If you need a faster experiment, you can skip the first run and train with `--phase one_step`, or use `--phase mixed` to combine random-time reflow samples and `t=0` samples in one run.
+
+### 1. Cache teacher outputs
+
+Use the frozen 40-step teacher to generate distillation targets. The cache stores sharded tensors containing `(y, x_gt, z0, x_teacher)` plus metadata. For the current best Gaussian-source v-prediction teacher, keep `--source_mode gaussian`.
+
+```bash
+python -m scripts.cache_teacher_distill \
+  --config configs/distill_1step.yaml \
+  --teacher_ckpt checkpoints/v_xl.pt \
+  --out_dir outputs/distill_cache/v_xl_gaussian \
+  --teacher_steps 40 \
+  --teacher_solver heun \
+  --source_mode gaussian \
+  --batch_size 1 \
+  --num_workers 0 \
+  --shard_size 128 \
+  --save_dtype float16 \
+  --overwrite
+```
+
+Useful cache options:
+
+- `--max_samples 128` for a quick subset smoke test.
+- `--seeds_per_sample 2` or higher to cache multiple Gaussian draws per measurement.
+- `--teacher_steps` and `--teacher_solver` should match the teacher you want to imitate.
+- `--overwrite` is required when replacing an existing cache directory.
+- If Hugging Face is already cached locally, offline mode can avoid metadata/network failures:
+
+```bash
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+```
+
+On Windows PowerShell, use:
+
+```powershell
+$env:HF_HUB_OFFLINE='1'
+$env:HF_DATASETS_OFFLINE='1'
+```
+
+### 2. Reflow distillation
+
+Initialize the student from the teacher checkpoint and train on random intermediate times along the cached teacher path:
+
+```bash
+python -m scripts.train_distill \
+  --config configs/distill_1step.yaml \
+  --cache_dir outputs/distill_cache/v_xl_gaussian \
+  --init_ckpt checkpoints/v_xl.pt \
+  --out_dir outputs/distill_1step/reflow \
+  --phase reflow
+```
+
+The main losses are:
+
+```python
+MSE(v_student, x_teacher - z0)
++ teacher_l1_weight * L1(x_endpoint, x_teacher)
++ gt_l1_weight * L1(x_endpoint, x_gt)
++ physics_weight * ||H x_endpoint - y||^2
+```
+
+The default `configs/distill_1step.yaml` keeps the physics loss off. Turn it on with a small value only after the basic student is learning:
+
+```bash
+python -m scripts.train_distill \
+  --config configs/distill_1step.yaml \
+  --cache_dir outputs/distill_cache/v_xl_gaussian \
+  --init_ckpt checkpoints/v_xl.pt \
+  --out_dir outputs/distill_1step/reflow_phys \
+  --phase reflow \
+  distill.physics_weight=0.001
+```
+
+### 3. One-step fine-tuning
+
+Fine-tune from the best reflow checkpoint using only `t=0`, which matches one-step Euler inference:
+
+```bash
+python -m scripts.train_distill \
+  --config configs/distill_1step.yaml \
+  --cache_dir outputs/distill_cache/v_xl_gaussian \
+  --init_ckpt outputs/distill_1step/reflow/distill_1step_best.pt \
+  --out_dir outputs/distill_1step/one_step \
+  --phase one_step
+```
+
+The output directory contains:
+
+- `distill_1step_best.pt`: best checkpoint by cached eval PSNR.
+- `distill_1step_latest.pt`: latest checkpoint.
+- `distill_1step_epoch*.pt`: periodic checkpoints.
+
+### 4. Evaluate true one-step generation
+
+Use `configs/distill_1step.yaml`, `--flow_only`, and Euler:
+
+```bash
+python -m scripts.eval \
+  --config configs/distill_1step.yaml \
+  --ckpt outputs/distill_1step/one_step/distill_1step_best.pt \
+  --flow_only \
+  --solver euler
+```
+
+The eval summary should show:
+
+```text
+steps: 1
+solver: euler
+```
+
+This avoids Heun's second model call and prevents the default baseline U-Net from being loaded.
+
 ## Sample / Visualize
 
 ```bash
