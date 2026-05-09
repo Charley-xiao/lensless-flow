@@ -1,0 +1,82 @@
+seed: 123
+
+device: "cuda"
+is_a100: true
+
+data:
+  path: "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset-NORM"
+  split: "train"
+  downsample: 1
+  flip_ud: false
+  num_workers: 8
+
+train:
+  mode: "vanilla"
+  batch_size: 8
+  lr: 1.0e-4
+  epochs: 20
+  grad_clip: 1.0
+  amp: true
+  save_every: 1
+
+model:
+  name: "unet"
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 3
+  use_time_conditioning: true
+
+cfm:
+  matcher: "rectified"
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0
+  source:
+    mode: "gaussian"
+    sigma0: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0
+
+physics:
+  disable_in_eval: true
+  dc_step_size: -1
+  dc_steps: 0
+
+sample:
+  steps: 1
+  solver: "euler"
+  init_noise_std: 1.0
+  save_dir: "outputs"
+
+distill:
+  batch_size: 8
+  num_workers: 0
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  epochs: 20
+  phase: "reflow"
+  one_step_prob: 0.5
+  save_every: 1
+  eval_batches: 8
+  amp: true
+  grad_clip: 1.0
+  v_weight: 1.0
+  teacher_l1_weight: 0.25
+  gt_l1_weight: 0.05
+  physics_weight: 0.0
+
+wandb:
+  enabled: false
+  project: "lensless-flow"
+  entity: null
+  name: null
+  tags: ["distill", "one_step", "vanilla", "lensless"]
+  log_every: 50
+  log_artifacts: true
+
+btb:
+  denom_min: 0.05
+
+compile:
+  enabled: false
