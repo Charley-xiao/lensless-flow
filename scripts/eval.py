@@ -362,6 +362,12 @@ if __name__ == "__main__":
         help="Optional baseline U-Net checkpoint. Defaults to checkpoints/unet.pt when available.",
     )
     ap.add_argument("--unet_config", type=str, default=None, help="Optional baseline U-Net config.")
+    ap.add_argument(
+        "--no_unet_baseline",
+        "--flow_only",
+        action="store_true",
+        help="Evaluate only the flow model and skip the default baseline U-Net.",
+    )
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--max_batches", type=int, default=200)
@@ -370,7 +376,7 @@ if __name__ == "__main__":
     unet_cfg = load_config(args.unet_config, overrides) if args.unet_config is not None else flow_cfg
 
     max_batches = None if args.max_batches < 0 else args.max_batches
-    resolved_unet_ckpt = _resolve_default_unet_ckpt(args.unet_ckpt)
+    resolved_unet_ckpt = None if args.no_unet_baseline else _resolve_default_unet_ckpt(args.unet_ckpt)
 
     main(
         flow_cfg=flow_cfg,
