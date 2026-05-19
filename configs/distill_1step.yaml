@@ -51,7 +51,7 @@ sample:
 
 distill:
   batch_size: 8
-  num_workers: 0
+  num_workers: 8
   lr: 1.0e-4
   weight_decay: 1.0e-4
   epochs: 20
