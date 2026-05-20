@@ -1,6 +1,4 @@
 import math
-import sys
-from pathlib import Path
 from typing import Callable
 
 import torch
@@ -117,6 +115,7 @@ def load_flow_runner(
     dc_steps_override: int | None,
     dc_step_size_override: float | None,
     disable_physics_override: bool | None,
+    solver_override: str | None = None,
 ) -> Callable[[torch.Tensor, FFTLinearConvOperator], torch.Tensor]:
     state = load_checkpoint_state(ckpt_path, device=device)
     model = build_model(
@@ -149,7 +148,7 @@ def load_flow_runner(
     init_noise_std = source_sigma0_from_cfg(cfg)
     source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
-    solver = str(cfg.get("sample", {}).get("solver", "heun")).lower()
+    solver = str(solver_override if solver_override is not None else cfg.get("sample", {}).get("solver", "heun")).lower()
 
     @torch.no_grad()
     def _runner(y: torch.Tensor, Hop: FFTLinearConvOperator) -> torch.Tensor:
@@ -185,102 +184,6 @@ def load_unet_runner(cfg, ckpt_path: str, img_channels: int, device: torch.devic
     @torch.no_grad()
     def _runner(y: torch.Tensor, _Hop: FFTLinearConvOperator) -> torch.Tensor:
         return unet_forward_baseline(model, y)
-
-    return _runner
-
-
-UPDN_MODEL_SPECS = {
-    "learned-primal-dual-and-five-models": {
-        "class": "ImageOptimizer",
-        "kwargs": {
-            "width": 5,
-            "depth": 10,
-            "learned_models": 5,
-        },
-    },
-    "learned-primal-dual-and-color-mixing": {
-        "class": "ImageOptimizerMixColors",
-        "kwargs": {
-            "depth": 10,
-        },
-    },
-}
-
-
-def _import_updn_modules(repo_path: str | Path):
-    repo_path = Path(repo_path).resolve()
-    package_dir = repo_path / "lensless"
-    if not package_dir.is_dir():
-        raise FileNotFoundError(f"UPDN repo path does not contain a lensless package: {repo_path}")
-
-    loaded_lensless = sys.modules.get("lensless")
-    if loaded_lensless is not None:
-        loaded_file = getattr(loaded_lensless, "__file__", None)
-        if loaded_file is not None and repo_path not in Path(loaded_file).resolve().parents:
-            raise ImportError(
-                "A different 'lensless' package is already imported. "
-                f"Cannot safely load UPDN from {repo_path}."
-            )
-
-    repo_str = str(repo_path)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
-
-    try:
-        from lensless.evaluate import EvaluationSystem
-        from lensless.model import ImageOptimizer
-        from lensless.model_colors import ImageOptimizerMixColors
-    except ImportError as exc:
-        raise ImportError(f"Could not import UPDN modules from {repo_path}: {exc}") from exc
-
-    return {
-        "EvaluationSystem": EvaluationSystem,
-        "ImageOptimizer": ImageOptimizer,
-        "ImageOptimizerMixColors": ImageOptimizerMixColors,
-    }
-
-
-def _updn_psf_from_eval_psf(psf: torch.Tensor) -> torch.Tensor:
-    if psf.ndim == 4 and psf.shape[0] == 1:
-        return psf.squeeze(0)
-    if psf.ndim == 3:
-        return psf
-    raise ValueError(
-        f"UPDN expects PSF shape [1,C,H,W] or [C,H,W], got {tuple(psf.shape)}"
-    )
-
-
-def load_updn_runner(
-    repo_path: str | Path,
-    ckpt_path: str | Path,
-    model_name: str,
-    psf: torch.Tensor,
-    device: torch.device,
-    disable_unet: bool = False,
-) -> Callable[[torch.Tensor, FFTLinearConvOperator], torch.Tensor]:
-    if model_name not in UPDN_MODEL_SPECS:
-        choices = ", ".join(sorted(UPDN_MODEL_SPECS))
-        raise ValueError(f"Unknown UPDN model '{model_name}'. Choices: {choices}")
-
-    modules = _import_updn_modules(repo_path)
-    spec = UPDN_MODEL_SPECS[model_name]
-    model_class = modules[spec["class"]]
-    eval_system_class = modules["EvaluationSystem"]
-
-    updn_psf = _updn_psf_from_eval_psf(psf).detach().to(
-        device=device,
-        dtype=torch.float32,
-    )
-    model = model_class(updn_psf, **spec["kwargs"])
-
-    checkpoint = torch.load(str(ckpt_path), map_location=device)
-    model = eval_system_class(model=model, checkpoint=checkpoint)
-    model.to(device)
-    model.eval()
-
-    @torch.no_grad()
-    def _runner(y: torch.Tensor, _Hop: FFTLinearConvOperator) -> torch.Tensor:
-        return model(y, denoise=not disable_unet)
 
     return _runner
 

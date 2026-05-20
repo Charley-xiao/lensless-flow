@@ -17,45 +17,90 @@ from scripts._paper_eval_utils import (
     compute_metrics,
     effective_batch_size,
     load_flow_runner,
-    load_updn_runner,
     load_unet_runner,
-    maybe_import_pyplot,
     parse_float_list,
     parse_int_list,
     restore_rng_state,
     run_with_latent_seed,
     samplewise_range,
     samplewise_rms,
-    UPDN_MODEL_SPECS,
     zero_fill_shift,
 )
 
 
-METHOD_ORDER = ("v_prediction", "x_prediction", "unet", "updn")
+FLOW_METHODS = {
+    "v_prediction": "vanilla",
+    "x_prediction": "btb",
+}
+METHOD_CHOICES = tuple(FLOW_METHODS) + ("unet",)
 METHOD_LABELS = {
     "v_prediction": "v-prediction",
     "x_prediction": "x-prediction",
     "unet": "baseline U-Net",
-    "updn": "UPDN",
 }
-DEFAULT_UPDN_REPO = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "lensless-primal-dual")
-)
+SUMMARY_FIELDS = [
+    "corruption",
+    "level_value",
+    "level_label",
+    "severity_rank",
+    "method",
+    "label",
+    "num_evals",
+    "perturb_rms",
+    "clean_psnr",
+    "clean_ssim",
+    "clean_mse",
+    "noisy_psnr",
+    "noisy_ssim",
+    "noisy_mse",
+    "psnr_drop",
+    "ssim_drop",
+    "mse_increase",
+]
+PER_SAMPLE_FIELDS = [
+    "sample_id",
+    "repeat",
+    "method",
+    "label",
+    "corruption",
+    "level_value",
+    "level_label",
+    "severity_rank",
+    "clean_psnr",
+    "clean_ssim",
+    "clean_mse",
+    "noisy_psnr",
+    "noisy_ssim",
+    "noisy_mse",
+    "psnr_drop",
+    "ssim_drop",
+    "mse_increase",
+    "perturb_rms",
+    "batch_index",
+    "batch_offset",
+]
 
 
 def _write_csv(path: str, rows: list[dict], fieldnames: list[str]) -> None:
+    ensure_dir(os.path.dirname(path))
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+        writer.writerows(rows)
 
 
 def _parse_corruption_list(text: str) -> list[str]:
     text = text.replace(",", " ")
     values = [x.strip() for x in text.split() if x.strip()]
     if "all" in values:
-        return ["exposure_scale", "background_offset", "measurement_noise", "poisson_peak", "measurement_shift", "psf_shift"]
+        return [
+            "exposure_scale",
+            "background_offset",
+            "measurement_noise",
+            "poisson_peak",
+            "measurement_shift",
+            "psf_shift",
+        ]
     return values
 
 
@@ -83,35 +128,6 @@ def _shift_from_level(level: int, axis: str) -> tuple[int, int]:
     raise ValueError(f"Unknown shift axis: {axis}")
 
 
-def _resolve_updn_ckpt(args) -> str:
-    if args.updn_ckpt:
-        return args.updn_ckpt
-    filename = (
-        "image_optimizer_colors.ckpt"
-        if args.updn_model == "learned-primal-dual-and-color-mixing"
-        else "image_optimizer.ckpt"
-    )
-    return os.path.join(args.updn_repo, "weights", filename)
-
-
-def _should_include_updn(args) -> bool:
-    return bool(args.include_updn or args.updn_ckpt)
-
-
-def _ordered_methods(rows: list[dict]) -> list[str]:
-    present = {row["method"] for row in rows}
-    ordered = [method for method in METHOD_ORDER if method in present]
-    ordered.extend(sorted(present.difference(ordered)))
-    return ordered
-
-
-def _method_rank(method_name: str) -> int:
-    try:
-        return METHOD_ORDER.index(method_name)
-    except ValueError:
-        return len(METHOD_ORDER)
-
-
 def _poisson_corrupt(y: torch.Tensor, peak: int, seed: int, clamp_output: bool) -> torch.Tensor:
     cpu_state, cuda_states = capture_rng_state()
     torch.manual_seed(int(seed))
@@ -119,8 +135,7 @@ def _poisson_corrupt(y: torch.Tensor, peak: int, seed: int, clamp_output: bool) 
         torch.cuda.manual_seed_all(int(seed))
     try:
         y_cpu = y.detach().float().cpu().clamp_min(0.0)
-        y_counts = y_cpu * float(peak)
-        y_poisson = torch.poisson(y_counts) / float(peak)
+        y_poisson = torch.poisson(y_cpu * float(peak)) / float(peak)
         if clamp_output:
             y_poisson = y_poisson.clamp(0.0, 1.0)
         return y_poisson.to(y.device, dtype=y.dtype)
@@ -157,8 +172,7 @@ def _measurement_noise_corrupt(
             raise ValueError(f"Unknown measurement_noise_scale={scale_mode}")
 
         noise = torch.randn(y.shape, device="cpu", dtype=torch.float32).to(y.device)
-        noise = noise * (float(noise_level) * scale.float())
-        y_corr = y_float + noise
+        y_corr = y_float + noise * (float(noise_level) * scale.float())
         if clamp_output:
             y_corr = y_corr.clamp(0.0, 1.0)
 
@@ -170,7 +184,7 @@ def _measurement_noise_corrupt(
 
 def _build_shifted_operator(psf: torch.Tensor, im_hw: tuple[int, int], shift_y: int, shift_x: int, device: torch.device):
     shifted_psf = zero_fill_shift(psf, shift_y=shift_y, shift_x=shift_x)
-    return FFTLinearConvOperator(psf=shifted_psf.to(device), im_hw=im_hw).to(device), shifted_psf
+    return FFTLinearConvOperator(psf=shifted_psf.to(device), im_hw=im_hw).to(device)
 
 
 def _corruption_levels(args) -> dict[str, list]:
@@ -203,26 +217,23 @@ def _apply_corruption(
     level_label = str(level)
 
     if corruption == "exposure_scale":
-        scale = float(level)
-        y_corr = y.float() * scale
+        y_corr = y.float() * float(level)
         if clamp_measurement:
             y_corr = y_corr.clamp(0.0, 1.0)
         actual_rms = float((y_corr - y.float()).pow(2).mean().sqrt().item())
         return y_corr.to(dtype=y.dtype), Hop_corr, level_label, actual_rms
 
     if corruption == "background_offset":
-        offset = float(level)
-        y_corr = y.float() + offset
+        y_corr = y.float() + float(level)
         if clamp_measurement:
             y_corr = y_corr.clamp(0.0, 1.0)
         actual_rms = float((y_corr - y.float()).pow(2).mean().sqrt().item())
         return y_corr.to(dtype=y.dtype), Hop_corr, level_label, actual_rms
 
     if corruption == "measurement_noise":
-        noise_level = float(level)
         y_corr, actual_rms = _measurement_noise_corrupt(
             y=y,
-            noise_level=noise_level,
+            noise_level=float(level),
             seed=seed,
             scale_mode=measurement_noise_scale,
             clamp_output=clamp_measurement,
@@ -232,10 +243,9 @@ def _apply_corruption(
     if corruption == "poisson_peak":
         if level == "clean":
             return y.clone(), Hop_corr, "clean", 0.0
-        peak = int(level)
-        y_corr = _poisson_corrupt(y=y, peak=peak, seed=seed, clamp_output=clamp_measurement)
+        y_corr = _poisson_corrupt(y=y, peak=int(level), seed=seed, clamp_output=clamp_measurement)
         actual_rms = float((y_corr.float() - y.float()).pow(2).mean().sqrt().item())
-        return y_corr, Hop_corr, str(peak), actual_rms
+        return y_corr, Hop_corr, str(level), actual_rms
 
     if corruption == "measurement_shift":
         pixels = int(level)
@@ -247,7 +257,7 @@ def _apply_corruption(
     if corruption == "psf_shift":
         pixels = int(level)
         dy, dx = _shift_from_level(pixels, shift_axis)
-        Hop_corr, shifted_psf = _build_shifted_operator(psf=psf, im_hw=im_hw, shift_y=dy, shift_x=dx, device=device)
+        Hop_corr = _build_shifted_operator(psf=psf, im_hw=im_hw, shift_y=dy, shift_x=dx, device=device)
         if pixels == 0:
             return y.clone(), Hop_corr, "0px", 0.0
         nominal_meas = nominal_H.forward(x.float())
@@ -258,54 +268,59 @@ def _apply_corruption(
     raise ValueError(f"Unsupported corruption: {corruption}")
 
 
-def _plot_summary(summary_rows: list[dict], out_path: str) -> str | None:
-    plt = maybe_import_pyplot()
-    if plt is None:
-        return None
-
-    corruptions = []
-    for row in summary_rows:
-        if row["corruption"] not in corruptions:
-            corruptions.append(row["corruption"])
-
-    fig, axes = plt.subplots(3, len(corruptions), figsize=(5 * len(corruptions), 12), constrained_layout=True)
-    if len(corruptions) == 1:
-        axes = axes.reshape(3, 1)
-
-    for col, corruption in enumerate(corruptions):
-        rows = [row for row in summary_rows if row["corruption"] == corruption]
-        level_order = []
-        for row in sorted(rows, key=lambda r: int(r["severity_rank"])):
-            if row["level_label"] not in level_order:
-                level_order.append(row["level_label"])
-
-        for method_name in _ordered_methods(rows):
-            method_rows = sorted(
-                [row for row in rows if row["method"] == method_name],
-                key=lambda r: int(r["severity_rank"]),
-            )
-            if not method_rows:
-                continue
-            xs = list(range(len(method_rows)))
-            label = METHOD_LABELS.get(method_name, method_name)
-            axes[0, col].plot(xs, [float(r["noisy_ssim"]) for r in method_rows], marker="o", label=label)
-            axes[1, col].plot(xs, [float(r["noisy_psnr"]) for r in method_rows], marker="o", label=label)
-            axes[2, col].plot(xs, [float(r["noisy_mse"]) for r in method_rows], marker="o", label=label)
-
-        for row_idx, title in enumerate(["SSIM", "PSNR", "MSE"]):
-            axes[row_idx, col].set_title(f"{corruption}: {title}")
-            axes[row_idx, col].set_xticks(list(range(len(level_order))), level_order, rotation=25)
-            axes[row_idx, col].grid(True, alpha=0.3)
-
-    axes[0, 0].legend()
-    fig.savefig(out_path, dpi=180)
-    plt.close(fig)
-    return out_path
+def _is_clean_condition(corruption: str, level_label: str) -> bool:
+    if corruption == "exposure_scale":
+        return level_label == "1.0"
+    if corruption in {"background_offset", "measurement_noise"}:
+        return level_label == "0.0"
+    if corruption == "poisson_peak":
+        return level_label == "clean"
+    if corruption in {"measurement_shift", "psf_shift"}:
+        return level_label == "0px"
+    return False
 
 
+def _default_label(method: str, result_name: str | None) -> str:
+    if result_name and result_name != method:
+        return result_name
+    return METHOD_LABELS.get(method, method)
+
+
+def _result_prefix(result_name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in result_name)
+
+
+def _build_runner(args, cfg, unet_cfg, img_channels: int, im_hw: tuple[int, int], device: torch.device):
+    if args.method in FLOW_METHODS:
+        return load_flow_runner(
+            cfg=cfg,
+            ckpt_path=args.ckpt,
+            pred_type=FLOW_METHODS[args.method],
+            img_channels=img_channels,
+            im_hw=im_hw,
+            device=device,
+            steps_override=args.steps,
+            solver_override=args.solver,
+            dc_steps_override=args.flow_dc_steps,
+            dc_step_size_override=args.flow_dc_step_size,
+            disable_physics_override=args.flow_disable_physics,
+        )
+    if args.method == "unet":
+        return load_unet_runner(
+            cfg=unet_cfg,
+            ckpt_path=args.ckpt,
+            img_channels=img_channels,
+            device=device,
+        )
+    raise ValueError(f"Unsupported method: {args.method}")
+
+
+@torch.no_grad()
 def main(args, flow_cfg, unet_cfg):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
     batch_size = effective_batch_size(args.batch_size)
+    result_name = args.result_name or args.method
+    label = args.label or _default_label(args.method, result_name)
 
     _, test_dl, psf, Hop, img_channels, im_hw = build_test_loader_and_operator(
         cfg=flow_cfg,
@@ -313,58 +328,13 @@ def main(args, flow_cfg, unet_cfg):
         num_workers=args.num_workers,
         device=device,
     )
-
-    methods = {
-        "v_prediction": load_flow_runner(
-            cfg=flow_cfg,
-            ckpt_path=args.v_ckpt,
-            pred_type="vanilla",
-            img_channels=img_channels,
-            im_hw=im_hw,
-            device=device,
-            steps_override=args.steps,
-            dc_steps_override=args.flow_dc_steps,
-            dc_step_size_override=args.flow_dc_step_size,
-            disable_physics_override=args.flow_disable_physics,
-        ),
-        "x_prediction": load_flow_runner(
-            cfg=flow_cfg,
-            ckpt_path=args.x_ckpt,
-            pred_type="btb",
-            img_channels=img_channels,
-            im_hw=im_hw,
-            device=device,
-            steps_override=args.steps,
-            dc_steps_override=args.flow_dc_steps,
-            dc_step_size_override=args.flow_dc_step_size,
-            disable_physics_override=args.flow_disable_physics,
-        ),
-        "unet": load_unet_runner(
-            cfg=unet_cfg,
-            ckpt_path=args.unet_ckpt,
-            img_channels=img_channels,
-            device=device,
-        ),
-    }
-    include_updn = _should_include_updn(args)
-    updn_ckpt = _resolve_updn_ckpt(args)
-    if include_updn:
-        methods["updn"] = load_updn_runner(
-            repo_path=args.updn_repo,
-            ckpt_path=updn_ckpt,
-            model_name=args.updn_model,
-            psf=psf,
-            device=device,
-            disable_unet=args.updn_disable_unet,
-        )
-
+    runner = _build_runner(args, flow_cfg, unet_cfg, img_channels, im_hw, device)
     corruption_levels = _corruption_levels(args)
     corruptions = _parse_corruption_list(args.corruptions)
 
     ensure_dir(args.out_dir)
-
     summary_acc = {
-        (corruption, str(level), method_name): {
+        (corruption, str(level)): {
             "clean_psnr": [],
             "clean_ssim": [],
             "clean_mse": [],
@@ -378,12 +348,11 @@ def main(args, flow_cfg, unet_cfg):
         }
         for corruption in corruptions
         for level in corruption_levels[corruption]
-        for method_name in methods
     }
     per_sample_rows = []
 
     sample_id = 0
-    pbar = tqdm(test_dl, desc="physical robustness")
+    pbar = tqdm(test_dl, desc=f"physical robustness [{result_name}]")
     for batch_idx, (y_batch, x_batch) in enumerate(pbar):
         if args.max_batches >= 0 and batch_idx >= args.max_batches:
             break
@@ -402,20 +371,16 @@ def main(args, flow_cfg, unet_cfg):
 
             for repeat_idx in range(args.repeats):
                 latent_seed = args.seed + current_sample_id * 100_003 + repeat_idx * 997
-                clean_outputs = {}
-                clean_metrics = {}
-                for method_idx, (method_name, runner) in enumerate(methods.items()):
-                    clean_outputs[method_name] = run_with_latent_seed(
-                        runner=runner,
-                        y=y,
-                        Hop=Hop,
-                        latent_seed=latent_seed + method_idx * 53,
-                    )
-                    clean_metrics[method_name] = compute_metrics(clean_outputs[method_name], x)
+                clean_output = run_with_latent_seed(
+                    runner=runner,
+                    y=y,
+                    Hop=Hop,
+                    latent_seed=latent_seed,
+                )
+                clean_metrics = compute_metrics(clean_output, x)
 
                 for corruption in corruptions:
-                    levels = corruption_levels[corruption]
-                    for severity_rank, level in enumerate(levels):
+                    for severity_rank, level in enumerate(corruption_levels[corruption]):
                         corrupt_seed = args.seed + current_sample_id * 17_389 + repeat_idx * 409 + severity_rank * 31
                         y_corr, Hop_corr, level_label, perturb_rms = _apply_corruption(
                             corruption=corruption,
@@ -432,56 +397,53 @@ def main(args, flow_cfg, unet_cfg):
                             measurement_noise_scale=args.measurement_noise_scale,
                         )
 
-                        for method_idx, (method_name, runner) in enumerate(methods.items()):
-                            if (corruption != "psf_shift" and level_label in ["1.0", "0.0", "clean", "0px"]) or (
-                                corruption == "psf_shift" and level_label == "0px"
-                            ):
-                                x_hat = clean_outputs[method_name]
-                            else:
-                                x_hat = run_with_latent_seed(
-                                    runner=runner,
-                                    y=y_corr,
-                                    Hop=Hop_corr,
-                                    latent_seed=latent_seed + method_idx * 53,
-                                )
-
-                            noisy_metrics = compute_metrics(x_hat, x)
-                            base = clean_metrics[method_name]
-                            key = (corruption, str(level), method_name)
-                            summary_acc[key]["clean_psnr"].append(base["psnr"])
-                            summary_acc[key]["clean_ssim"].append(base["ssim"])
-                            summary_acc[key]["clean_mse"].append(base["mse"])
-                            summary_acc[key]["noisy_psnr"].append(noisy_metrics["psnr"])
-                            summary_acc[key]["noisy_ssim"].append(noisy_metrics["ssim"])
-                            summary_acc[key]["noisy_mse"].append(noisy_metrics["mse"])
-                            summary_acc[key]["psnr_drop"].append(base["psnr"] - noisy_metrics["psnr"])
-                            summary_acc[key]["ssim_drop"].append(base["ssim"] - noisy_metrics["ssim"])
-                            summary_acc[key]["mse_increase"].append(noisy_metrics["mse"] - base["mse"])
-                            summary_acc[key]["perturb_rms"].append(float(perturb_rms))
-
-                            per_sample_rows.append(
-                                {
-                                    "sample_id": current_sample_id,
-                                    "repeat": repeat_idx,
-                                    "method": method_name,
-                                    "corruption": corruption,
-                                    "level_value": str(level),
-                                    "level_label": level_label,
-                                    "severity_rank": severity_rank,
-                                    "clean_psnr": base["psnr"],
-                                    "clean_ssim": base["ssim"],
-                                    "clean_mse": base["mse"],
-                                    "noisy_psnr": noisy_metrics["psnr"],
-                                    "noisy_ssim": noisy_metrics["ssim"],
-                                    "noisy_mse": noisy_metrics["mse"],
-                                    "psnr_drop": base["psnr"] - noisy_metrics["psnr"],
-                                    "ssim_drop": base["ssim"] - noisy_metrics["ssim"],
-                                    "mse_increase": noisy_metrics["mse"] - base["mse"],
-                                    "perturb_rms": float(perturb_rms),
-                                    "batch_index": batch_idx,
-                                    "batch_offset": batch_offset,
-                                }
+                        if _is_clean_condition(corruption, level_label):
+                            x_hat = clean_output
+                        else:
+                            x_hat = run_with_latent_seed(
+                                runner=runner,
+                                y=y_corr,
+                                Hop=Hop_corr,
+                                latent_seed=latent_seed,
                             )
+
+                        noisy_metrics = compute_metrics(x_hat, x)
+                        key = (corruption, str(level))
+                        summary_acc[key]["clean_psnr"].append(clean_metrics["psnr"])
+                        summary_acc[key]["clean_ssim"].append(clean_metrics["ssim"])
+                        summary_acc[key]["clean_mse"].append(clean_metrics["mse"])
+                        summary_acc[key]["noisy_psnr"].append(noisy_metrics["psnr"])
+                        summary_acc[key]["noisy_ssim"].append(noisy_metrics["ssim"])
+                        summary_acc[key]["noisy_mse"].append(noisy_metrics["mse"])
+                        summary_acc[key]["psnr_drop"].append(clean_metrics["psnr"] - noisy_metrics["psnr"])
+                        summary_acc[key]["ssim_drop"].append(clean_metrics["ssim"] - noisy_metrics["ssim"])
+                        summary_acc[key]["mse_increase"].append(noisy_metrics["mse"] - clean_metrics["mse"])
+                        summary_acc[key]["perturb_rms"].append(float(perturb_rms))
+
+                        per_sample_rows.append(
+                            {
+                                "sample_id": current_sample_id,
+                                "repeat": repeat_idx,
+                                "method": result_name,
+                                "label": label,
+                                "corruption": corruption,
+                                "level_value": str(level),
+                                "level_label": level_label,
+                                "severity_rank": severity_rank,
+                                "clean_psnr": clean_metrics["psnr"],
+                                "clean_ssim": clean_metrics["ssim"],
+                                "clean_mse": clean_metrics["mse"],
+                                "noisy_psnr": noisy_metrics["psnr"],
+                                "noisy_ssim": noisy_metrics["ssim"],
+                                "noisy_mse": noisy_metrics["mse"],
+                                "psnr_drop": clean_metrics["psnr"] - noisy_metrics["psnr"],
+                                "ssim_drop": clean_metrics["ssim"] - noisy_metrics["ssim"],
+                                "mse_increase": noisy_metrics["mse"] - clean_metrics["mse"],
+                                "perturb_rms": float(perturb_rms),
+                                "batch_index": batch_idx,
+                                "batch_offset": batch_offset,
+                            }
+                        )
 
         if args.max_samples >= 0 and sample_id >= args.max_samples:
             break
@@ -489,122 +451,62 @@ def main(args, flow_cfg, unet_cfg):
     summary_rows = []
     for corruption in corruptions:
         for severity_rank, level in enumerate(corruption_levels[corruption]):
-            for method_name in methods:
-                acc = summary_acc[(corruption, str(level), method_name)]
-                level_label = str(level)
-                if corruption == "poisson_peak" and level == "clean":
-                    level_label = "clean"
-                elif corruption in ["measurement_shift", "psf_shift"]:
-                    level_label = f"{int(level)}px"
+            acc = summary_acc[(corruption, str(level))]
+            level_label = str(level)
+            if corruption == "poisson_peak" and level == "clean":
+                level_label = "clean"
+            elif corruption in ["measurement_shift", "psf_shift"]:
+                level_label = f"{int(level)}px"
 
-                summary_rows.append(
-                    {
-                        "corruption": corruption,
-                        "level_value": str(level),
-                        "level_label": level_label,
-                        "severity_rank": severity_rank,
-                        "method": method_name,
-                        "num_evals": len(acc["noisy_psnr"]),
-                        "perturb_rms": avg(acc["perturb_rms"]),
-                        "clean_psnr": avg(acc["clean_psnr"]),
-                        "clean_ssim": avg(acc["clean_ssim"]),
-                        "clean_mse": avg(acc["clean_mse"]),
-                        "noisy_psnr": avg(acc["noisy_psnr"]),
-                        "noisy_ssim": avg(acc["noisy_ssim"]),
-                        "noisy_mse": avg(acc["noisy_mse"]),
-                        "psnr_drop": avg(acc["psnr_drop"]),
-                        "ssim_drop": avg(acc["ssim_drop"]),
-                        "mse_increase": avg(acc["mse_increase"]),
-                    }
-                )
+            summary_rows.append(
+                {
+                    "corruption": corruption,
+                    "level_value": str(level),
+                    "level_label": level_label,
+                    "severity_rank": severity_rank,
+                    "method": result_name,
+                    "label": label,
+                    "num_evals": len(acc["noisy_psnr"]),
+                    "perturb_rms": avg(acc["perturb_rms"]),
+                    "clean_psnr": avg(acc["clean_psnr"]),
+                    "clean_ssim": avg(acc["clean_ssim"]),
+                    "clean_mse": avg(acc["clean_mse"]),
+                    "noisy_psnr": avg(acc["noisy_psnr"]),
+                    "noisy_ssim": avg(acc["noisy_ssim"]),
+                    "noisy_mse": avg(acc["noisy_mse"]),
+                    "psnr_drop": avg(acc["psnr_drop"]),
+                    "ssim_drop": avg(acc["ssim_drop"]),
+                    "mse_increase": avg(acc["mse_increase"]),
+                }
+            )
 
-    summary_rows.sort(
-        key=lambda row: (
-            row["corruption"],
-            int(row["severity_rank"]),
-            _method_rank(row["method"]),
-            row["method"],
-        )
-    )
+    summary_rows.sort(key=lambda row: (row["corruption"], int(row["severity_rank"])))
     per_sample_rows.sort(
         key=lambda row: (
             row["sample_id"],
             row["corruption"],
             int(row["severity_rank"]),
-            _method_rank(row["method"]),
-            row["method"],
             row["repeat"],
         )
     )
 
-    summary_csv = os.path.join(args.out_dir, "physical_robustness_summary.csv")
-    per_sample_csv = os.path.join(args.out_dir, "physical_robustness_per_sample.csv")
-    metadata_json = os.path.join(args.out_dir, "physical_robustness_metadata.json")
-    plot_path = os.path.join(args.out_dir, "physical_robustness_curves.png")
+    prefix = _result_prefix(result_name)
+    summary_csv = os.path.join(args.out_dir, f"{prefix}_physical_robustness_summary.csv")
+    per_sample_csv = os.path.join(args.out_dir, f"{prefix}_physical_robustness_per_sample.csv")
+    metadata_json = os.path.join(args.out_dir, f"{prefix}_physical_robustness_metadata.json")
 
-    _write_csv(
-        summary_csv,
-        summary_rows,
-        [
-            "corruption",
-            "level_value",
-            "level_label",
-            "severity_rank",
-            "method",
-            "num_evals",
-            "perturb_rms",
-            "clean_psnr",
-            "clean_ssim",
-            "clean_mse",
-            "noisy_psnr",
-            "noisy_ssim",
-            "noisy_mse",
-            "psnr_drop",
-            "ssim_drop",
-            "mse_increase",
-        ],
-    )
-    _write_csv(
-        per_sample_csv,
-        per_sample_rows,
-        [
-            "sample_id",
-            "repeat",
-            "method",
-            "corruption",
-            "level_value",
-            "level_label",
-            "severity_rank",
-            "clean_psnr",
-            "clean_ssim",
-            "clean_mse",
-            "noisy_psnr",
-            "noisy_ssim",
-            "noisy_mse",
-            "psnr_drop",
-            "ssim_drop",
-            "mse_increase",
-            "perturb_rms",
-            "batch_index",
-            "batch_offset",
-        ],
-    )
-
-    summary_plot = _plot_summary(summary_rows, plot_path)
+    _write_csv(summary_csv, summary_rows, SUMMARY_FIELDS)
+    _write_csv(per_sample_csv, per_sample_rows, PER_SAMPLE_FIELDS)
 
     with open(metadata_json, "w") as f:
         json.dump(
             {
                 "config": os.path.abspath(args.config),
-                "unet_config": os.path.abspath(args.unet_config) if args.unet_config else os.path.abspath(args.config),
-                "v_ckpt": os.path.abspath(args.v_ckpt),
-                "x_ckpt": os.path.abspath(args.x_ckpt),
-                "unet_ckpt": os.path.abspath(args.unet_ckpt),
-                "updn_enabled": include_updn,
-                "updn_repo": os.path.abspath(args.updn_repo),
-                "updn_ckpt": os.path.abspath(updn_ckpt) if include_updn else None,
-                "updn_model": args.updn_model if include_updn else None,
-                "updn_denoise": (not args.updn_disable_unet) if include_updn else None,
+                "unet_config": os.path.abspath(args.unet_config) if args.unet_config else None,
+                "ckpt": os.path.abspath(args.ckpt),
+                "method": args.method,
+                "result_name": result_name,
+                "label": label,
                 "device": str(device),
                 "batch_size": batch_size,
                 "num_workers": args.num_workers,
@@ -617,69 +519,65 @@ def main(args, flow_cfg, unet_cfg):
                 "measurement_clamped": not args.no_clamp_measurement,
                 "measurement_noise_scale": args.measurement_noise_scale,
                 "shift_axis": args.shift_axis,
-                "flow_steps": int(args.steps if args.steps is not None else flow_cfg["sample"]["steps"]),
+                "flow_steps": int(args.steps if args.steps is not None else flow_cfg["sample"]["steps"])
+                if args.method in FLOW_METHODS
+                else None,
+                "flow_solver": str(args.solver if args.solver is not None else flow_cfg.get("sample", {}).get("solver", "heun"))
+                if args.method in FLOW_METHODS
+                else None,
                 "flow_disable_physics": bool(
                     args.flow_disable_physics
                     if args.flow_disable_physics is not None
                     else flow_cfg.get("physics", {}).get("disable_in_eval", False)
-                ),
+                )
+                if args.method in FLOW_METHODS
+                else None,
                 "flow_dc_steps": int(
                     args.flow_dc_steps
                     if args.flow_dc_steps is not None
                     else flow_cfg.get("physics", {}).get("dc_steps", 0)
-                ),
+                )
+                if args.method in FLOW_METHODS
+                else None,
                 "flow_dc_step_size": float(
                     args.flow_dc_step_size
                     if args.flow_dc_step_size is not None
                     else flow_cfg.get("physics", {}).get("dc_step_size", 0.0)
-                ),
-                "summary_plot": summary_plot,
+                )
+                if args.method in FLOW_METHODS
+                else None,
+                "summary_csv": os.path.abspath(summary_csv),
+                "per_sample_csv": os.path.abspath(per_sample_csv),
                 "num_images_evaluated": sample_id,
             },
             f,
             indent=2,
         )
 
-    print("\n======= Physical Robustness Summary =======")
+    print("\n======= Physical Robustness Result =======")
+    print(f"method: {result_name} ({label})")
     print(f"summary_csv: {summary_csv}")
     print(f"per_sample_csv: {per_sample_csv}")
     print(f"metadata_json: {metadata_json}")
-    if summary_plot is not None:
-        print(f"plot: {summary_plot}")
-    print("-------------------------------------------")
+    print("------------------------------------------")
     for row in summary_rows:
         if int(row["severity_rank"]) == 0:
             continue
         print(
-            f"{row['corruption']:>18s} | {row['level_label']:>8s} | {row['method']:>12s} | "
+            f"{row['corruption']:>18s} | {row['level_label']:>8s} | "
             f"SSIM {row['noisy_ssim']:.4f} | PSNR {row['noisy_psnr']:.2f} | MSE {row['noisy_mse']:.6f}"
         )
-    print("===========================================\n")
+    print("==========================================\n")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=str, required=True, help="Flow-model config.")
-    ap.add_argument("--v_ckpt", type=str, required=True)
-    ap.add_argument("--x_ckpt", type=str, required=True)
-    ap.add_argument("--unet_ckpt", type=str, required=True)
-    ap.add_argument("--unet_config", type=str, default=None)
-    ap.add_argument("--include_updn", action="store_true", help="Include the UPDN baseline from --updn_repo.")
-    ap.add_argument("--updn_repo", type=str, default=DEFAULT_UPDN_REPO, help="Path to the lensless-primal-dual repo.")
-    ap.add_argument(
-        "--updn_ckpt",
-        type=str,
-        default=None,
-        help="UPDN checkpoint. Defaults to weights/image_optimizer*.ckpt in --updn_repo.",
-    )
-    ap.add_argument(
-        "--updn_model",
-        type=str,
-        default="learned-primal-dual-and-five-models",
-        choices=sorted(UPDN_MODEL_SPECS),
-        help="UPDN architecture/checkpoint family to load.",
-    )
-    ap.add_argument("--updn_disable_unet", action="store_true", help="Disable UPDN's internal U-Net denoiser.")
+    ap.add_argument("--config", type=str, required=True, help="Config used for data and flow-model sampling.")
+    ap.add_argument("--ckpt", type=str, required=True, help="Checkpoint for the single model to evaluate.")
+    ap.add_argument("--method", type=str, required=True, choices=METHOD_CHOICES)
+    ap.add_argument("--result_name", type=str, default=None, help="Output/model id. Defaults to --method.")
+    ap.add_argument("--label", type=str, default=None, help="Human-readable label stored in CSV/metadata.")
+    ap.add_argument("--unet_config", type=str, default=None, help="Required when --method unet uses a different config.")
     ap.add_argument(
         "--corruptions",
         type=str,
@@ -693,7 +591,6 @@ if __name__ == "__main__":
         type=str,
         default="rms",
         choices=["rms", "range", "absmax", "fixed"],
-        help="Scale for additive Gaussian noise on the lensless measurement.",
     )
     ap.add_argument("--poisson_peaks", type=str, default="clean,1024,256,64,16")
     ap.add_argument("--shift_levels", type=str, default="0,1,2,4")
@@ -705,7 +602,8 @@ if __name__ == "__main__":
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--max_batches", type=int, default=-1)
     ap.add_argument("--max_samples", type=int, default=-1)
-    ap.add_argument("--steps", type=int, default=None)
+    ap.add_argument("--steps", type=int, default=None, help="Override flow ODE steps for flow methods.")
+    ap.add_argument("--solver", type=str, default=None, choices=["heun", "euler"], help="Override flow ODE solver.")
     ap.add_argument("--flow_dc_steps", type=int, default=None)
     ap.add_argument("--flow_dc_step_size", type=float, default=None)
     ap.add_argument("--flow_disable_physics", action=argparse.BooleanOptionalAction, default=None)

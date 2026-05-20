@@ -276,6 +276,102 @@ solver: euler
 
 This avoids Heun's second model call and prevents the default baseline U-Net from being loaded.
 
+## Physical robustness evaluation
+
+Physical robustness is evaluated one model at a time. Each run takes one checkpoint, applies the requested measurement or PSF corruptions, and writes a result file for that model. This keeps long evaluations resumable and makes it easy to add or replace baselines without rerunning everything.
+
+Velocity-prediction flow:
+
+```bash
+python -m scripts.eval_physical_robustness \
+  --config configs/a100_base.yaml \
+  --ckpt checkpoints/v_xl.pt \
+  --method v_prediction \
+  --result_name v_prediction \
+  --label "v-prediction" \
+  --out_dir outputs/physical_robustness
+```
+
+Image-prediction flow:
+
+```bash
+python -m scripts.eval_physical_robustness \
+  --config configs/a100_base.yaml \
+  --ckpt checkpoints/x_xl \
+  --method x_prediction \
+  --result_name x_prediction \
+  --label "x-prediction" \
+  --out_dir outputs/physical_robustness
+```
+
+Baseline U-Net:
+
+```bash
+python -m scripts.eval_physical_robustness \
+  --config configs/a100_base.yaml \
+  --ckpt checkpoints/unet.pt \
+  --method unet \
+  --unet_config configs/unet_baseline.yaml \
+  --result_name unet \
+  --label "baseline U-Net" \
+  --out_dir outputs/physical_robustness
+```
+
+Distilled one-step flow:
+
+```bash
+python -m scripts.eval_physical_robustness \
+  --config configs/distill_1step.yaml \
+  --ckpt outputs/distill_1step/one_step/distill_1step_best.pt \
+  --method v_prediction \
+  --result_name distill_1step \
+  --label "1-step distilled" \
+  --steps 1 \
+  --solver euler \
+  --out_dir outputs/physical_robustness
+```
+
+Each run writes:
+
+```text
+<result_name>_physical_robustness_summary.csv
+<result_name>_physical_robustness_per_sample.csv
+<result_name>_physical_robustness_metadata.json
+```
+
+Useful options:
+
+- `--max_samples 32` for a quick smoke test.
+- `--corruptions background_offset,measurement_noise` to restrict the corruption set.
+- `--measurement_noise_levels 0.0,0.01,0.02,0.05` to change severity levels.
+- `--flow_disable_physics` or `--no-flow_disable_physics` to override physics guidance for flow methods.
+- `--result_name` prevents overwriting when you evaluate multiple checkpoints with the same `--method`.
+
+After the individual result files are present, plot everything in the directory:
+
+```bash
+python rqs/plot_physical_robustness_results.py \
+  --results_dir outputs/physical_robustness \
+  --out_dir outputs/paper/physical_robustness
+```
+
+By default, the plotting script uses `--methods auto` and discovers every file matching:
+
+```text
+*_physical_robustness_summary.csv
+```
+
+To plot a specific subset and fail if any requested file is missing:
+
+```bash
+python rqs/plot_physical_robustness_results.py \
+  --results_dir outputs/physical_robustness \
+  --methods v_prediction,x_prediction,unet,distill_1step \
+  --out_dir outputs/paper/physical_robustness
+```
+
+Other baselines can be included in the plot as long as they write the same summary CSV columns and use the same filename pattern.
+
 ## Sample / Visualize
 
 ```bash
