@@ -38,6 +38,9 @@ cfm:
   matcher: "rectified"
   t_min: 0.001
   t_max: 0.999
+  t_distribution: "beta"
+  t_alpha: 0.5
+  t_beta: 0.5
   sigma_data: 1.0
   source:
     mode: "gaussian"

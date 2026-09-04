@@ -188,9 +188,20 @@ def main(cfg):
     source_mode = source_mode_from_cfg(cfg)
     source_sigma0 = source_sigma0_from_cfg(cfg)
     source_kwargs = source_sampler_kwargs_from_cfg(cfg)
+    cfm_cfg = cfg["cfm"]
+    t_distribution = str(cfm_cfg.get("t_distribution", "uniform"))
+    t_alpha = float(cfm_cfg.get("t_alpha", 0.5))
+    t_beta = float(cfm_cfg.get("t_beta", 0.5))
     time_tag = "tcond" if use_time_conditioning else "notime"
     print(f"Time conditioning: {use_time_conditioning}")
     print(f"CFM source: {source_mode} (sigma0={source_sigma0})")
+    if t_distribution.strip().lower().replace("-", "_") == "beta":
+        print(
+            f"CFM t sampler: beta(alpha={t_alpha}, beta={t_beta}) "
+            f"mapped to [{cfm_cfg['t_min']}, {cfm_cfg['t_max']}]"
+        )
+    else:
+        print(f"CFM t sampler: {t_distribution} on [{cfm_cfg['t_min']}, {cfm_cfg['t_max']}]")
 
     # -------------------------
     # W&B init
@@ -319,7 +330,15 @@ def main(cfg):
             x = to_nchw(x).to(device, non_blocking=True)
 
             b = x.shape[0]
-            t = sample_t(b, cfg["cfm"]["t_min"], cfg["cfm"]["t_max"], device)
+            t = sample_t(
+                b,
+                cfm_cfg["t_min"],
+                cfm_cfg["t_max"],
+                device,
+                distribution=t_distribution,
+                alpha=t_alpha,
+                beta=t_beta,
+            )
 
             fm_batch = sample_flow_matching_training_batch(
                 x_target=x,

@@ -37,6 +37,9 @@ cfm:
   matcher: rectified
   t_min: 0.001
   t_max: 0.999
+  t_distribution: beta
+  t_alpha: 0.5
+  t_beta: 0.5
   sigma_data: 1.0
   source:
     mode: gaussian
@@ -52,7 +55,7 @@ sample:
   steps: 40
   solver: heun
   init_noise_std: 1.0
-  save_dir: outputs/rbc_hologram_unet64
+  save_dir: outputs/rbc_hologram_unet64_beta
 ssim:
   window_size: 11
   sigma: 1.5
@@ -65,13 +68,14 @@ wandb:
   enabled: true
   project: lensless-flow
   entity: null
-  name: rbc_hologram_unet64_200ep_pure_flow
+  name: rbc_hologram_unet64_beta_200ep_pure_flow
   tags:
   - rbc
   - hologram
   - phase
   - pure-flow
   - unet64
+  - beta-t
   - fixed-eval
   log_every: 50
   eval_batches: 128

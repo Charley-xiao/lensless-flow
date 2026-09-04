@@ -79,6 +79,9 @@ its paired phase map. It does not use a PSF or data-consistency guidance.
 Validation uses fixed latent seeds by default; otherwise pure-flow sampling
 resamples a different Gaussian start every epoch and the SSIM curve is too
 noisy to compare checkpoints fairly.
+Training samples flow times from `Beta(0.5, 0.5)`, mapped into the configured
+`[t_min, t_max]` interval, to emphasize both the noisy-source and target-end
+parts of the path.
 
 Expected local dataset layout:
 

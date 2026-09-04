@@ -77,9 +77,40 @@ def build_flow_matcher(name: str):
     return matcher
 
 
-def sample_t(batch_size: int, t_min: float, t_max: float, device):
-    t = torch.rand(batch_size, device=device) * (t_max - t_min) + t_min
-    return t
+def sample_t(
+    batch_size: int,
+    t_min: float,
+    t_max: float,
+    device,
+    distribution: str | None = "uniform",
+    alpha: float = 0.5,
+    beta: float = 0.5,
+):
+    """
+    Sample flow-matching times.
+
+    The returned values are always mapped into [t_min, t_max]. For the RBC
+    pure-flow runs, this lets us use a Beta(0.5, 0.5) shape while retaining the
+    small endpoint margin already used by the sampler.
+    """
+    if not 0.0 <= float(t_min) < float(t_max) <= 1.0:
+        raise ValueError(f"Expected 0 <= t_min < t_max <= 1, got {t_min=} {t_max=}.")
+
+    name = "uniform" if distribution is None else str(distribution).strip().lower().replace("-", "_")
+    if name in {"uniform", "rand", "random"}:
+        u = torch.rand(batch_size, device=device)
+    elif name in {"beta", "beta_distribution"}:
+        alpha = float(alpha)
+        beta = float(beta)
+        if alpha <= 0 or beta <= 0:
+            raise ValueError(f"Beta t sampler requires positive alpha/beta, got alpha={alpha}, beta={beta}.")
+        concentration1 = torch.tensor(alpha, device=device)
+        concentration0 = torch.tensor(beta, device=device)
+        u = torch.distributions.Beta(concentration1, concentration0).sample((batch_size,))
+    else:
+        raise ValueError("Unsupported cfm.t_distribution. Expected 'uniform' or 'beta'.")
+
+    return u * (float(t_max) - float(t_min)) + float(t_min)
 
 
 def sample_flow_matching_training_batch(
