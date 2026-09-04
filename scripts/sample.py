@@ -8,13 +8,19 @@ import matplotlib.pyplot as plt
 from lensless_flow.config import load_config
 from lensless_flow.utils import ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTLinearConvOperator
+from lensless_flow.physics import build_forward_operator_from_dataset
 from lensless_flow.model_factory import build_flow_model, resolve_model_name
 from lensless_flow.model_unet import resolve_use_time_conditioning
 from lensless_flow.flow_matching import normalize_flow_matcher_name
 from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
+
+
+def data_loader_kwargs(cfg: dict) -> dict:
+    data_cfg = dict(cfg.get("data", {}) or {})
+    excluded = {"path", "split", "eval_split", "downsample", "flip_ud", "num_workers"}
+    return {k: v for k, v in data_cfg.items() if k not in excluded}
 
 
 def to_imshow(x_bchw: torch.Tensor):
@@ -40,12 +46,13 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     # Load dataset (test)
     # -------------------------
     test_ds, _ = make_dataloader(
-        split="test",
+        split=cfg["data"].get("eval_split", "test"),
         downsample=cfg["data"]["downsample"],
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=1,
         num_workers=0,
         path=cfg["data"].get("path", None),
+        **data_loader_kwargs(cfg),
     )
 
     # Load one sample and convert to NCHW
@@ -53,14 +60,13 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
     y = to_nchw(y).to(device)  # [1,C,H,W]
     x = to_nchw(x).to(device)
 
-    # -------------------------
-    # PSF + operator
-    # -------------------------
-    psf = to_nchw(test_ds.psf).to(device)  # [1,C,h,w] or [1,C,H,W]
     H_img, W_img = y.shape[-2], y.shape[-1]
-    Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
-    y_hat = Hop.forward(x)
-    print("rmse:", ((y_hat - y)**2).mean().sqrt().item())
+    Hop = build_forward_operator_from_dataset(test_ds, y, device=device)
+    if Hop is not None:
+        y_hat = Hop.forward(x)
+        print("rmse:", ((y_hat - y)**2).mean().sqrt().item())
+    else:
+        print("Forward operator: none (pure conditional flow)")
 
     # -------------------------
     # Model
@@ -116,6 +122,9 @@ def main(cfg, idx: int, ckpt: str, steps_list, cols: int, seed: int | None, disa
 
     dc_steps = int(cfg.get("physics", {}).get("dc_steps", 0))
     dc_step = float(cfg.get("physics", {}).get("dc_step_size", 0.0))
+    if Hop is None:
+        disable_physics = True
+        dc_steps = 0
 
     print(f"[sample.py] disable_physics={disable_physics}, dc_steps={dc_steps}, dc_step={dc_step} (<=0 => auto if enabled)")
 

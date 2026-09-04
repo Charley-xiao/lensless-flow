@@ -1,0 +1,95 @@
+seed: 123
+
+device: "cuda"
+is_a100: true
+
+data:
+  dataset: "rbc_hologram"
+  path: "E:/RBCs Holograms"
+  split: "train"
+  eval_split: "validation"
+  downsample: 1
+  flip_ud: false
+  flip_lr: false
+  hologram_invert: false
+  phase_invert: false
+  max_samples: null
+  pin_memory: false
+  num_workers: 0
+
+train:
+  mode: "vanilla"
+  batch_size: 8
+  lr: 2.0e-4
+  epochs: 100
+  grad_clip: 1.0
+  amp: false
+  save_every: 5
+  save_since_epoch: 0.0
+
+model:
+  name: "unet"
+  base_channels: 48
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 3
+  use_time_conditioning: true  # set false to ignore t in vanilla v-pred; incompatible with btb / x-pred
+
+cfm:
+  matcher: "rectified"
+  t_min: 0.001
+  t_max: 0.999
+  sigma_data: 1.0
+  source:
+    mode: "gaussian"
+    sigma0: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0
+
+physics:
+  disable_in_eval: true
+  dc_step_size: 0.0
+  dc_steps: 0
+
+sample:
+  steps: 40
+  solver: "heun"
+  init_noise_std: 1.0
+  save_dir: "outputs/rbc_hologram"
+
+ssim:
+  window_size: 11
+  sigma: 1.5
+  data_range: 1.0
+
+eval:
+  fixed_latent: true
+  seed: 20260903
+  seed_stride: 100003
+
+wandb:
+  enabled: false
+  project: "lensless-flow"
+  entity: null
+  name: "rbc_hologram_pure_flow"
+  tags: ["rbc", "hologram", "phase", "pure-flow", "cfm"]
+  log_every: 50
+  eval_batches: 128
+  log_images_every: 1
+  log_artifacts: false
+
+btb:
+  denom_min: 0.05
+
+sched:
+  enabled: true
+  metric: "eval/ssim"
+  mode: "max"
+  factor: 0.5
+  patience: 10
+  threshold: 1.0e-4
+  cooldown: 0
+  min_lr: 2.0e-5
+
+compile:
+  enabled: false

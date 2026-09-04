@@ -18,7 +18,7 @@ from lensless_flow.model_factory import (
     load_checkpoint_state_dict,
 )
 from lensless_flow.measurement_source import source_sampler_kwargs_from_cfg, source_sigma0_from_cfg
-from lensless_flow.physics import FFTLinearConvOperator
+from lensless_flow.physics import build_forward_operator_from_dataset
 from lensless_flow.sampler import sample_with_physics_guidance
 from lensless_flow.tensor_utils import to_nchw
 
@@ -27,6 +27,32 @@ def _avg(values: list[float]) -> float:
     if not values:
         return float("nan")
     return float(sum(values) / len(values))
+
+
+def data_loader_kwargs(cfg: dict) -> dict:
+    data_cfg = dict(cfg.get("data", {}) or {})
+    excluded = {"path", "split", "eval_split", "downsample", "flip_ud", "num_workers"}
+    return {k: v for k, v in data_cfg.items() if k not in excluded}
+
+
+def _call_with_preserved_rng(fn, seed: int | None, device: torch.device):
+    if seed is None:
+        return fn()
+
+    cpu_state = torch.random.get_rng_state()
+    cuda_states = None
+    if device.type == "cuda" and torch.cuda.is_available():
+        cuda_states = torch.cuda.get_rng_state_all()
+
+    try:
+        torch.manual_seed(int(seed))
+        if cuda_states is not None:
+            torch.cuda.manual_seed_all(int(seed))
+        return fn()
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
 
 
 def _load_state_dict(model: nn.Module, state) -> None:
@@ -135,7 +161,9 @@ def _per_sample_mse(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return (x_hat.float() - x.float()).reshape(x.shape[0], -1).pow(2).mean(dim=1)
 
 
-def _per_sample_dc_rmse(Hop: FFTLinearConvOperator, x_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def _per_sample_dc_rmse(Hop, x_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    if Hop is None:
+        return torch.full((x_hat.shape[0],), float("nan"), device=x_hat.device)
     residual = Hop.forward(x_hat.float()) - y.float()
     return residual.reshape(residual.shape[0], -1).pow(2).mean(dim=1).sqrt()
 
@@ -157,7 +185,11 @@ def _print_method_summary(
     print(f"SSIM avg: {_avg(stats['ssim']):.6f}")
     print(f"LPIPS avg: {_avg(stats['lpips']):.6f}")
     print(f"MSE avg: {_avg(stats['mse']):.8f}")
-    print(f"Data-consistency RMSE avg: {_avg(stats['dc_rmse']):.6f}")
+    dc_avg = _avg(stats["dc_rmse"])
+    if math.isnan(dc_avg):
+        print("Data-consistency RMSE avg: n/a")
+    else:
+        print(f"Data-consistency RMSE avg: {dc_avg:.6f}")
     print(f"Generation time avg: {_avg(stats['gen_time_ms_per_sample']):.2f} ms/sample")
     if math.isnan(fid_value):
         print("FID: n/a (need at least 2 evaluated samples)")
@@ -178,6 +210,9 @@ def main(
     batch_size: int,
     num_workers: int,
     solver_override: str | None,
+    eval_seed: int | None,
+    eval_seed_stride: int,
+    fixed_latent: bool,
 ):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
 
@@ -195,12 +230,13 @@ def main(
     )
 
     test_ds, test_dl = make_dataloader(
-        split="test",
+        split=flow_cfg["data"].get("eval_split", "test"),
         downsample=flow_cfg["data"]["downsample"],
         flip_ud=flow_cfg["data"]["flip_ud"],
         batch_size=batch_size,
         num_workers=num_workers,
         path=flow_cfg["data"].get("path", None),
+        **data_loader_kwargs(flow_cfg),
     )
 
     y0, _ = test_ds[0]
@@ -208,8 +244,7 @@ def main(
     img_channels = int(y0.shape[1])
     im_hw = (int(y0.shape[-2]), int(y0.shape[-1]))
 
-    psf = to_nchw(test_ds.psf).to(device)
-    Hop = FFTLinearConvOperator(psf=psf, im_hw=im_hw).to(device)
+    Hop = build_forward_operator_from_dataset(test_ds, y0.to(device), device=device)
 
     flow_model = _build_unet(
         flow_cfg,
@@ -229,6 +264,9 @@ def main(
     dc_steps = int(flow_cfg.get("physics", {}).get("dc_steps", 0))
     dc_step = float(flow_cfg.get("physics", {}).get("dc_step_size", 0.0))
     dc_mode = "rgb"
+    if Hop is None:
+        disable_physics = True
+        dc_steps = 0
 
     methods: dict[str, dict] = {
         "flow": {
@@ -254,8 +292,10 @@ def main(
                 f"matcher: {flow_matcher_name}",
                 f"steps: {steps}",
                 f"solver: {solver}",
+                f"fixed latent seed: {eval_seed if fixed_latent and eval_seed is not None else 'off'}",
                 f"DC: {'disabled' if disable_physics else (dc_mode + f' (dc_steps={dc_steps}, dc_step={dc_step})')}",
             ],
+            "stochastic": True,
         }
     }
 
@@ -278,6 +318,7 @@ def main(
                 "steps: 1 forward pass",
                 "DC: none",
             ],
+            "stochastic": False,
         }
 
     lpips_metric = _build_lpips_metric(device)
@@ -298,6 +339,7 @@ def main(
 
         y = to_nchw(y).to(device)
         x = to_nchw(x).to(device)
+        sample_offset = total_samples
         total_samples += int(x.shape[0])
 
         x_c = x.clamp(0, 1)
@@ -309,7 +351,15 @@ def main(
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             start_time = time.perf_counter()
-            x_hat = method_cfg["runner"](y)
+            latent_seed = None
+            if fixed_latent and bool(method_cfg.get("stochastic", False)) and eval_seed is not None:
+                latent_seed = int(eval_seed) + int(sample_offset) * int(eval_seed_stride)
+
+            x_hat = _call_with_preserved_rng(
+                lambda: method_cfg["runner"](y),
+                seed=latent_seed,
+                device=device,
+            )
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             elapsed_ms_per_sample = (time.perf_counter() - start_time) * 1000.0 / max(1, int(y.shape[0]))
@@ -376,12 +426,24 @@ if __name__ == "__main__":
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--max_batches", type=int, default=200)
     ap.add_argument("--solver", type=str, default=None, choices=["heun", "euler"], help="Override cfg.sample.solver.")
+    ap.add_argument("--seed", type=int, default=None, help="Fixed latent seed for stochastic flow eval.")
+    ap.add_argument("--stochastic_eval", action="store_true", help="Disable fixed latent seeding during flow eval.")
     args, overrides = ap.parse_known_args()
     flow_cfg = load_config(args.config, overrides)
     unet_cfg = load_config(args.unet_config, overrides) if args.unet_config is not None else flow_cfg
 
     max_batches = None if args.max_batches < 0 else args.max_batches
+    eval_cfg = dict(flow_cfg.get("eval", {}) or {})
+    eval_seed = args.seed if args.seed is not None else eval_cfg.get("seed", flow_cfg.get("seed", None))
+    eval_seed_stride = int(eval_cfg.get("seed_stride", 100_003))
+    fixed_latent = (not args.stochastic_eval) and bool(eval_cfg.get("fixed_latent", True))
     resolved_unet_ckpt = None if args.no_unet_baseline else _resolve_default_unet_ckpt(args.unet_ckpt)
+    if (
+        not args.no_unet_baseline
+        and args.unet_ckpt is None
+        and str(flow_cfg.get("data", {}).get("dataset", "")).strip().lower().replace("-", "_") in {"rbc", "rbcs", "rbc_hologram", "rbc_holograms", "human_rbc", "human_rbc_hologram"}
+    ):
+        resolved_unet_ckpt = None
 
     main(
         flow_cfg=flow_cfg,
@@ -394,4 +456,7 @@ if __name__ == "__main__":
         batch_size=max(1, int(args.batch_size)),
         num_workers=max(0, int(args.num_workers)),
         solver_override=args.solver,
+        eval_seed=int(eval_seed) if eval_seed is not None else None,
+        eval_seed_stride=eval_seed_stride,
+        fixed_latent=fixed_latent,
     )

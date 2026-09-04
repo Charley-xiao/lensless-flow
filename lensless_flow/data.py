@@ -41,6 +41,7 @@ import torchvision.transforms as tf
 from waveprop.noise import add_shot_noise
 import os
 import warnings
+from pathlib import Path
 
 torch_available = True
 RPI_HQ_CAMERA_CCM_MATRIX = np.array(
@@ -782,9 +783,197 @@ class DiffuserCamMirflickrHF(DualDataset):
         return lensless, lensed
 
 
-def make_dataloader(split: str, downsample: int, flip_ud: bool, batch_size: int, num_workers: int, path: str = "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset"):
-    ds = DiffuserCamMirflickrHF(split=split, downsample=downsample, flip_ud=flip_ud, repo_id=path)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=(split == "train"),
-                    num_workers=num_workers, pin_memory=True, drop_last=(split == "train"), 
+def _normalize_dataset_name(name: str | None) -> str:
+    if name is None:
+        return "diffusercam"
+    key = str(name).strip().lower().replace("-", "_")
+    aliases = {
+        "diffusercam": "diffusercam",
+        "diffusercam_hf": "diffusercam",
+        "mirflickr": "diffusercam",
+        "diffusercam_mirflickr": "diffusercam",
+        "rbc": "rbc_hologram",
+        "rbcs": "rbc_hologram",
+        "rbc_hologram": "rbc_hologram",
+        "rbc_holograms": "rbc_hologram",
+        "human_rbc": "rbc_hologram",
+        "human_rbc_hologram": "rbc_hologram",
+    }
+    if key not in aliases:
+        raise ValueError(
+            f"Unsupported data.dataset='{name}'. "
+            "Expected 'diffusercam' or 'rbc_hologram'."
+        )
+    return aliases[key]
+
+
+def _rbc_split_dir(split: str) -> str:
+    key = str(split).strip().lower()
+    aliases = {
+        "train": "Training",
+        "training": "Training",
+        "val": "Validation",
+        "valid": "Validation",
+        "validation": "Validation",
+        "test": "Validation",
+    }
+    if key not in aliases:
+        raise ValueError(
+            f"Unsupported RBC split='{split}'. Expected train/training or val/validation/test."
+        )
+    return aliases[key]
+
+
+def _rbc_pair_key(path: Path) -> str:
+    # Training phase filenames contain repeated ".png" fragments, e.g.
+    # hologram: Image_..._1-1-A.png
+    # phase:    Image_..._1-1.png-A.png.png
+    # Removing all ".png" tokens gives a stable one-to-one key.
+    return path.name.lower().replace(".png", "")
+
+
+def _read_grayscale_float(path: Path) -> np.ndarray:
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Could not read image: {path}")
+    if np.issubdtype(img.dtype, np.integer):
+        info = np.iinfo(img.dtype)
+        img = img.astype(np.float32) / float(info.max)
+    else:
+        img = img.astype(np.float32)
+        max_val = float(img.max()) if img.size else 0.0
+        if max_val > 1.0:
+            img = img / max_val
+    return np.clip(img, 0.0, 1.0)
+
+
+class HumanRBCHologramDataset(Dataset):
+    """
+    Paired human RBC hologram -> phase-map dataset.
+
+    Expected root layout:
+      Holograms/Training/*.png
+      Holograms/Validation/*.png
+      Phase/Training/*.png
+      Phase/Validation/*.png
+
+    Returns tensors in HWC layout with one channel; callers already convert
+    batches with lensless_flow.tensor_utils.to_nchw.
+    """
+
+    def __init__(
+        self,
+        root: str | os.PathLike,
+        split: str = "train",
+        downsample: int | float = 1,
+        flip_ud: bool = False,
+        flip_lr: bool = False,
+        max_samples: int | None = None,
+        phase_invert: bool = False,
+        hologram_invert: bool = False,
+        **kwargs,
+    ):
+        self.root = Path(root)
+        self.split = _rbc_split_dir(split)
+        self.downsample = float(downsample)
+        self.flip_ud = bool(flip_ud)
+        self.flip_lr = bool(flip_lr)
+        self.phase_invert = bool(phase_invert)
+        self.hologram_invert = bool(hologram_invert)
+        self.psf = None
+
+        hologram_dir = self.root / "Holograms" / self.split
+        phase_dir = self.root / "Phase" / self.split
+        if not hologram_dir.is_dir():
+            raise FileNotFoundError(f"Missing RBC hologram directory: {hologram_dir}")
+        if not phase_dir.is_dir():
+            raise FileNotFoundError(f"Missing RBC phase directory: {phase_dir}")
+
+        holograms = sorted(p for p in hologram_dir.iterdir() if p.is_file() and p.suffix.lower() == ".png")
+        phases = sorted(p for p in phase_dir.iterdir() if p.is_file() and p.suffix.lower() == ".png")
+        phase_by_key = {_rbc_pair_key(p): p for p in phases}
+
+        pairs = []
+        missing = []
+        for hologram_path in holograms:
+            key = _rbc_pair_key(hologram_path)
+            phase_path = phase_by_key.get(key)
+            if phase_path is None:
+                missing.append(hologram_path.name)
+                continue
+            pairs.append((hologram_path, phase_path))
+
+        if missing:
+            raise ValueError(
+                f"Found {len(missing)} holograms without matching phase maps. "
+                f"First missing file: {missing[0]}"
+            )
+        if not pairs:
+            raise ValueError(f"No RBC hologram/phase pairs found under {self.root}")
+        if max_samples is not None:
+            pairs = pairs[: int(max_samples)]
+        self.pairs = pairs
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def _resize_if_needed(self, img: np.ndarray) -> np.ndarray:
+        if self.downsample == 1.0:
+            return img
+        h, w = img.shape[-2], img.shape[-1]
+        out_h = max(1, int(round(h / self.downsample)))
+        out_w = max(1, int(round(w / self.downsample)))
+        return cv2.resize(img, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+    def __getitem__(self, idx):
+        hologram_path, phase_path = self.pairs[int(idx)]
+        hologram = self._resize_if_needed(_read_grayscale_float(hologram_path))
+        phase = self._resize_if_needed(_read_grayscale_float(phase_path))
+
+        if self.hologram_invert:
+            hologram = 1.0 - hologram
+        if self.phase_invert:
+            phase = 1.0 - phase
+
+        if self.flip_ud:
+            hologram = np.flipud(hologram)
+            phase = np.flipud(phase)
+        if self.flip_lr:
+            hologram = np.fliplr(hologram)
+            phase = np.fliplr(phase)
+
+        hologram = np.ascontiguousarray(hologram[..., None])
+        phase = np.ascontiguousarray(phase[..., None])
+        return torch.from_numpy(hologram), torch.from_numpy(phase)
+
+
+def make_dataloader(
+    split: str,
+    downsample: int,
+    flip_ud: bool,
+    batch_size: int,
+    num_workers: int,
+    path: str = "bezzam/DiffuserCam-Lensless-Mirflickr-Dataset",
+    dataset: str | None = None,
+    **data_kwargs,
+):
+    dataset_name = _normalize_dataset_name(dataset)
+    if dataset_name == "rbc_hologram":
+        ds = HumanRBCHologramDataset(
+            root=path,
+            split=split,
+            downsample=downsample,
+            flip_ud=flip_ud,
+            flip_lr=bool(data_kwargs.get("flip_lr", False)),
+            max_samples=data_kwargs.get("max_samples", None),
+            phase_invert=bool(data_kwargs.get("phase_invert", False)),
+            hologram_invert=bool(data_kwargs.get("hologram_invert", False)),
+        )
+    else:
+        ds = DiffuserCamMirflickrHF(split=split, downsample=downsample, flip_ud=flip_ud, repo_id=path)
+    is_train_split = str(split).strip().lower() in {"train", "training"}
+    pin_memory = bool(data_kwargs.get("pin_memory", True))
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=is_train_split,
+                    num_workers=num_workers, pin_memory=pin_memory, drop_last=is_train_split,
                     persistent_workers=(num_workers > 0), prefetch_factor=4 if num_workers > 0 else None)
     return ds, dl

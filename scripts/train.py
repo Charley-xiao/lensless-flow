@@ -11,7 +11,7 @@ import wandb
 from lensless_flow.config import load_config
 from lensless_flow.utils import set_seed, ensure_dir
 from lensless_flow.data import make_dataloader
-from lensless_flow.physics import FFTLinearConvOperator
+from lensless_flow.physics import build_forward_operator_from_dataset
 from lensless_flow.model_factory import build_flow_model, resolve_model_name
 from lensless_flow.model_unet import use_time_conditioning_from_cfg
 from lensless_flow.flow_matching import (
@@ -41,13 +41,50 @@ def chw_to_wandb_image(x_bchw: torch.Tensor):
     return wandb.Image(x.permute(1, 2, 0).numpy())
 
 
+def data_loader_kwargs(cfg: dict) -> dict:
+    data_cfg = dict(cfg.get("data", {}) or {})
+    excluded = {"path", "split", "eval_split", "downsample", "flip_ud", "num_workers"}
+    return {k: v for k, v in data_cfg.items() if k not in excluded}
+
+
+def _eval_seed_for_batch(cfg: dict, batch_idx: int, offset: int = 0) -> int | None:
+    eval_cfg = dict(cfg.get("eval", {}) or {})
+    if not bool(eval_cfg.get("fixed_latent", True)):
+        return None
+    base_seed = eval_cfg.get("seed", cfg.get("seed", None))
+    if base_seed is None:
+        return None
+    stride = int(eval_cfg.get("seed_stride", 100_003))
+    return int(base_seed) + int(offset) + int(batch_idx) * stride
+
+
+def _call_with_preserved_rng(fn, seed: int | None, device: torch.device):
+    if seed is None:
+        return fn()
+
+    cpu_state = torch.random.get_rng_state()
+    cuda_states = None
+    if device.type == "cuda" and torch.cuda.is_available():
+        cuda_states = torch.cuda.get_rng_state_all()
+
+    try:
+        torch.manual_seed(int(seed))
+        if cuda_states is not None:
+            torch.cuda.manual_seed_all(int(seed))
+        return fn()
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
 @torch.no_grad()
 def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05, pred_type="btb"):
     """
     Validation:
       - Generate x_hat via sampler
       - Compute x_hat vs x metrics: L1, MSE, PSNR, SSIM
-      - Also compute data-consistency RMSE in measurement space: ||H x_hat - y||_2
+      - If H is available, compute data-consistency RMSE in measurement space.
     """
     model.eval()
 
@@ -72,19 +109,29 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         y = to_nchw(y).to(device)
         x = to_nchw(x).to(device)
 
-        x_hat = sample_with_physics_guidance(
-            model=model,
-            y=y,
-            H=Hop,
-            steps=cfg["sample"]["steps"],
-            dc_step=cfg["physics"]["dc_step_size"],
-            dc_steps=cfg["physics"]["dc_steps"],
-            init_noise_std=source_sigma0,
-            denom_min=denom_min,
-            clamp_x=False,
-            disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
-            pred_type=pred_type,
-            **source_kwargs,
+        latent_seed = _eval_seed_for_batch(cfg, i)
+
+        def _sample():
+            return sample_with_physics_guidance(
+                model=model,
+                y=y,
+                H=Hop,
+                steps=cfg["sample"]["steps"],
+                dc_step=cfg["physics"]["dc_step_size"],
+                dc_steps=cfg["physics"]["dc_steps"],
+                init_noise_std=source_sigma0,
+                denom_min=denom_min,
+                clamp_x=False,
+                disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
+                pred_type=pred_type,
+                solver=str(cfg.get("sample", {}).get("solver", "heun")),
+                **source_kwargs,
+            )
+
+        x_hat = _call_with_preserved_rng(
+            _sample,
+            seed=latent_seed,
+            device=device,
         )
 
         # metrics in [0,1]
@@ -99,8 +146,9 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         ssim_val = float(ssim_torch(x_hat_c.float(), x_c.float(), window_size=ws, sigma=sigma, data_range=data_range).item())
         ssim_list.append(ssim_val)
 
-        dc_err = (Hop.forward(x_hat.float()) - y.float()).pow(2).mean().sqrt().item()
-        dc_rmse_list.append(dc_err)
+        if Hop is not None:
+            dc_err = (Hop.forward(x_hat.float()) - y.float()).pow(2).mean().sqrt().item()
+            dc_rmse_list.append(dc_err)
 
     def avg(lst):
         return float(sum(lst) / max(1, len(lst)))
@@ -110,7 +158,7 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         "eval/mse": avg(mse_list),
         "eval/psnr": avg(psnr_list),
         "eval/ssim": avg(ssim_list),
-        "eval/dc_rmse": avg(dc_rmse_list),
+        "eval/dc_rmse": avg(dc_rmse_list) if dc_rmse_list else float("nan"),
     }
 
 
@@ -166,12 +214,13 @@ def main(cfg):
     # Data
     # -------------------------
     train_ds, train_dl = make_dataloader(
-        split="train",
+        split=cfg["data"].get("split", "train"),
         downsample=cfg["data"]["downsample"],
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=cfg["train"]["batch_size"],
         num_workers=cfg["data"]["num_workers"],
         path=cfg["data"].get("path", None),
+        **data_loader_kwargs(cfg),
     )
 
     eval_batches = int(wb.get("eval_batches", 0) or 0)
@@ -179,24 +228,33 @@ def main(cfg):
     test_ds, test_dl = None, None
     if eval_batches > 0 or log_images_every > 0:
         test_ds, test_dl = make_dataloader(
-            split="test",
+            split=cfg["data"].get("eval_split", "test"),
             downsample=cfg["data"]["downsample"],
             flip_ud=cfg["data"]["flip_ud"],
             batch_size=1,
             num_workers=0,
             path=cfg["data"].get("path", None),
+            **data_loader_kwargs(cfg),
         )
 
     # -------------------------
-    # PSF + operator
+    # Optional PSF + operator
     # -------------------------
-    psf = to_nchw(train_ds.psf.to(device))
     y0, x0 = train_ds[0]
     y0 = to_nchw(y0)
     x0 = to_nchw(x0)
+    if y0.shape[1:] != x0.shape[1:]:
+        raise ValueError(f"Expected paired y/x tensors with matching CHW shape, got {tuple(y0.shape)} and {tuple(x0.shape)}")
     C = y0.shape[1]
     H_img, W_img = y0.shape[-2], y0.shape[-1]
-    Hop = FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)
+    Hop = build_forward_operator_from_dataset(train_ds, y0.to(device), device=device)
+    if Hop is None:
+        print("Forward operator: none (pure conditional flow)")
+    else:
+        print("Forward operator: PSF FFT convolution")
+
+    if float(cfg.get("cfm", {}).get("loss", {}).get("physics_weight", 0.0)) > 0 and Hop is None:
+        raise ValueError("cfm.loss.physics_weight > 0 requires a dataset with a known forward operator.")
 
     # -------------------------
     # Model
@@ -245,6 +303,7 @@ def main(cfg):
     save_since_epoch = float(cfg["train"].get("save_since_epoch", 0.0)) # if <1, interpreted as fraction of total epochs; if >=1, interpreted as absolute epoch number
     if save_since_epoch < 1.0:
         save_since_epoch = int(cfg["train"]["epochs"] * save_since_epoch)
+    eval_metrics = {}
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
@@ -412,19 +471,27 @@ def main(cfg):
             y_ex = to_nchw(y_ex).to(device)
             x_ex = to_nchw(x_ex).to(device)
 
-            x_hat_ex = sample_with_physics_guidance(
-                model=model,
-                y=y_ex,
-                H=Hop,
-                steps=cfg["sample"]["steps"],
-                dc_step=cfg["physics"]["dc_step_size"],
-                dc_steps=cfg["physics"]["dc_steps"],
-                init_noise_std=source_sigma0,
-                denom_min=denom_min,
-                clamp_x=False,
-                disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
-                pred_type=pred_type,
-                **source_kwargs,
+            def _sample_viz():
+                return sample_with_physics_guidance(
+                    model=model,
+                    y=y_ex,
+                    H=Hop,
+                    steps=cfg["sample"]["steps"],
+                    dc_step=cfg["physics"]["dc_step_size"],
+                    dc_steps=cfg["physics"]["dc_steps"],
+                    init_noise_std=source_sigma0,
+                    denom_min=denom_min,
+                    clamp_x=False,
+                    disable_physics=bool(cfg.get("physics", {}).get("disable_in_eval", False)),
+                    pred_type=pred_type,
+                    solver=str(cfg.get("sample", {}).get("solver", "heun")),
+                    **source_kwargs,
+                )
+
+            x_hat_ex = _call_with_preserved_rng(
+                _sample_viz,
+                seed=_eval_seed_for_batch(cfg, 0, offset=9_000_000),
+                device=device,
             )
 
             wandb.log(
@@ -439,7 +506,8 @@ def main(cfg):
         # checkpoint
         if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
             ssim = eval_metrics.get("eval/ssim", 0.0)
-            ckpt_path = f"checkpoints/cfm_lensless_{pred_type}_{flow_matcher_name}_{time_tag}_epoch{epoch}_ssim{ssim:.4f}.pt"
+            dataset_tag = str(cfg.get("data", {}).get("dataset", "lensless")).lower().replace("-", "_")
+            ckpt_path = f"checkpoints/cfm_{dataset_tag}_{pred_type}_{flow_matcher_name}_{time_tag}_epoch{epoch}_ssim{ssim:.4f}.pt"
             torch.save(
                 {
                     "model": model.state_dict(),

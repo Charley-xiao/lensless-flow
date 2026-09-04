@@ -15,6 +15,12 @@ from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.metrics import psnr, ssim_torch
 
 
+def data_loader_kwargs(cfg: dict) -> dict:
+    data_cfg = dict(cfg.get("data", {}) or {})
+    excluded = {"path", "split", "eval_split", "downsample", "flip_ud", "num_workers"}
+    return {k: v for k, v in data_cfg.items() if k not in excluded}
+
+
 @torch.no_grad()
 def eval_loop(model, dl, device, max_batches=0):
     model.eval()
@@ -50,20 +56,22 @@ def main():
 
     # data
     train_ds, train_dl = make_dataloader(
-        split="train",
+        split=cfg["data"].get("split", "train"),
         downsample=cfg["data"]["downsample"],
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=cfg["train"]["batch_size"],
         num_workers=cfg["data"]["num_workers"],
         path=cfg["data"].get("path", None),
+        **data_loader_kwargs(cfg),
     )
     test_ds, test_dl = make_dataloader(
-        split="test",
+        split=cfg["data"].get("eval_split", "test"),
         downsample=cfg["data"]["downsample"],
         flip_ud=cfg["data"]["flip_ud"],
         batch_size=cfg["train"]["batch_size"],
         num_workers=0,
         path=cfg["data"].get("path", None),
+        **data_loader_kwargs(cfg),
     )
 
     # infer channels from dataset

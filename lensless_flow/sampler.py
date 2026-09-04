@@ -143,6 +143,9 @@ def sample_with_physics_guidance(
     ts = torch.linspace(0.0, 1.0, steps + 1, device=device, dtype=y.dtype)
     _maybe_record_trajectory_state(trajectory, step_idx=0, time_value=float(ts[0]), state=z)
 
+    if (not disable_physics) and dc_steps > 0 and H is None:
+        raise ValueError("Physics guidance requested dc_steps > 0, but H is None.")
+
     # Auto DC step if user didn't specify (or set <=0)
     if (not disable_physics) and dc_steps > 0 and (dc_step is None or dc_step <= 0):
         safety = float(getattr(H, "dc_safety", 0.5))  # optional

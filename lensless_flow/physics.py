@@ -211,3 +211,27 @@ class FFTLinearConvOperator(nn.Module):
 
 # Backward-compatible name used by older analysis scripts.
 FFTConvOperator = FFTLinearConvOperator
+
+
+def build_forward_operator_from_dataset(dataset, sample_y: torch.Tensor, device: torch.device):
+    """
+    Build the known PSF operator when a dataset provides one.
+
+    Datasets such as HumanRBCHologramDataset are supervised reconstruction
+    pairs without a known physics operator; for those, return None and let the
+    flow model operate as a pure conditional generator.
+    """
+    psf = getattr(dataset, "psf", None)
+    if psf is None:
+        return None
+
+    from lensless_flow.tensor_utils import to_nchw
+
+    if torch.is_tensor(psf):
+        psf = psf.to(device)
+    else:
+        psf = torch.as_tensor(psf, device=device)
+
+    psf = to_nchw(psf)
+    H_img, W_img = int(sample_y.shape[-2]), int(sample_y.shape[-1])
+    return FFTLinearConvOperator(psf=psf, im_hw=(H_img, W_img)).to(device)

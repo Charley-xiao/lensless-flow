@@ -72,6 +72,39 @@ python -m scripts.sample --config configs/base.yaml --ckpt checkpoints/your_mode
 python -m scripts.eval --config configs/base.yaml --ckpt checkpoints/your_model.pt sample.steps=30
 ```
 
+## Human RBC Hologram Reconstruction
+
+The RBC config trains pure conditional flow matching from a hologram image to
+its paired phase map. It does not use a PSF or data-consistency guidance.
+Validation uses fixed latent seeds by default; otherwise pure-flow sampling
+resamples a different Gaussian start every epoch and the SSIM curve is too
+noisy to compare checkpoints fairly.
+
+Expected local dataset layout:
+
+```text
+E:/RBCs Holograms/
+  Holograms/Training/*.png
+  Holograms/Validation/*.png
+  Phase/Training/*.png
+  Phase/Validation/*.png
+```
+
+Run with the project environment:
+
+```bash
+conda activate py312
+python -m scripts.train --config configs/rbc_hologram.yaml
+python -m scripts.sample --config configs/rbc_hologram.yaml --ckpt checkpoints/your_rbc_checkpoint.pt --idx 0 --steps 10,20,40
+python -m scripts.infer_rbc --config configs/rbc_hologram.yaml --ckpt checkpoints/your_rbc_checkpoint.pt --max_samples 64 --save_inputs --save_targets
+python -m scripts.eval --config configs/rbc_hologram.yaml --ckpt checkpoints/your_rbc_checkpoint.pt --flow_only --max_batches 200 --seed 20260903
+```
+
+For a larger 256x256 RBC run, use `configs/rbc_hologram_unet64.yaml`
+(width 64, four U-Net scales, about 69.5M parameters). The even larger
+`configs/rbc_hologram_large_unet.yaml` uses five scales and about 110.7M
+parameters.
+
 For scripts that already expose a dedicated flag such as `--steps`, that explicit flag still takes precedence over the config value.
 
 The default training configs now use a compact `nafnet`-style backbone:
