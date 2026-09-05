@@ -6,5 +6,7 @@ __all__ = [
     "sampler",
     "utils",
     "tensor_utils",
-    "metrics"
+    "metrics",
+    "holography_admm",
+    "holography_offaxis",
 ]

@@ -7,6 +7,7 @@ tqdm
 matplotlib
 scipy
 scikit-learn
+scikit-image>=0.21
 lpips
 torchmetrics
 torch-fidelity

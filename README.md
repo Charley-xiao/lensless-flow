@@ -103,6 +103,41 @@ python -m scripts.infer_rbc --config configs/rbc_hologram.yaml --ckpt checkpoint
 python -m scripts.eval --config configs/rbc_hologram.yaml --ckpt checkpoints/your_rbc_checkpoint.pt --flow_only --max_batches 200 --seed 20260903
 ```
 
+For a physics baseline, use off-axis Fourier demodulation:
+
+```bash
+python -m scripts.eval_rbc_offaxis --config configs/rbc_hologram.yaml --max_samples 256 --diagnose_labels
+python -m scripts.eval_rbc_offaxis --hologram "path/to/hologram.png" --out_dir outputs/rbc_single_offaxis
+```
+
+The matching [dataset paper](https://doi.org/10.1016/j.dib.2024.110424)
+describes in-focus, off-axis telecentric microscopy. Its forward model is
+`I = |O + R|^2`, with a complex object field and a tilted reference wave.
+The new baseline extracts a separated Fourier sideband and estimates the
+reference carrier; it does not learn a transfer function. It retains both
+relative phase and the measured cross-term amplitude. Single-image mode loads
+no labels and exports a phase PNG plus floating-point arrays in an NPZ file.
+
+Evaluation reports input-only reconstruction separately from the optional
+**label-assisted physics diagnostic**. That diagnostic fits phase sign,
+piston, and two tilt parameters against each paired target; its scores are
+not deployment reconstruction scores. The input-only background/sign rule
+can differ from the original full-frame labels' phase gauge, particularly
+for dense crops. See [the physical-model audit](docs/rbc_physics_reassessment.md)
+for visual results, baselines, assumptions, and split-overlap limitations.
+
+The earlier in-line angular-spectrum ADMM experiment remains available:
+
+```bash
+python -m scripts.eval_rbc_admm --config configs/rbc_hologram.yaml --max_samples 32 --iters 100
+```
+
+This legacy experiment uses the phase-only in-line holography relation
+`u0 = exp(i * phi)`, `uz = P_z u0`, `y = |uz|^2`, where `P_z` is an
+angular-spectrum free-space propagator. It is a mismatched acquisition model
+for this off-axis dataset and should not be treated as the physical RBC
+baseline. Its old evaluation numbers are retained only as historical results.
+
 For a larger 256x256 RBC run, use `configs/rbc_hologram_unet64.yaml`
 (width 64, four U-Net scales, about 69.5M parameters). The even larger
 `configs/rbc_hologram_large_unet.yaml` uses five scales and about 110.7M
