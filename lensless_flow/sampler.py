@@ -79,6 +79,7 @@ def sample_with_physics_guidance(
     source_admm_step_size: float = 0.001,
     source_admm_start: str = "adjoint",
     source_admm_start_normalize: str = "max",
+    initial_state: torch.Tensor | None = None,
 ):
     """
     ODE sampling with optional physics-guided data-consistency (DC).
@@ -101,6 +102,8 @@ def sample_with_physics_guidance(
     containing the post-step state:
       {"step": int, "time": float, "state": Tensor[B,C,H,W]}
     The initial latent at t=0 is recorded as step 0.
+    An explicit initial_state bypasses source sampling, allowing identical
+    per-image latents across methods and evaluation batch sizes.
     """
     pred_type = str(pred_type).lower()
     assert pred_type in ["btb", "vanilla"], f"pred_type must be 'btb' or 'vanilla', got {pred_type}"
@@ -123,21 +126,21 @@ def sample_with_physics_guidance(
 
     # initial state z0. By default this is Gaussian noise. Robust bridge
     # variants can start from z_y = P(y, H_nominal) + sigma0 * eps.
-    source = sample_flow_source(
-        y=y,
-        H=H,
-        mode=source_mode,
-        noise_std=init_noise_std,
-        init_method=source_init,
-        init_normalize=source_init_normalize,
-        admm_steps=source_admm_steps,
-        admm_inner_steps=source_admm_inner_steps,
-        admm_rho=source_admm_rho,
-        admm_step_size=source_admm_step_size,
-        admm_start=source_admm_start,
-        admm_start_normalize=source_admm_start_normalize,
-    )
-    z = source.x_source
+    if initial_state is None:
+        source = sample_flow_source(
+            y=y, H=H, mode=source_mode, noise_std=init_noise_std,
+            init_method=source_init, init_normalize=source_init_normalize,
+            admm_steps=source_admm_steps, admm_inner_steps=source_admm_inner_steps,
+            admm_rho=source_admm_rho, admm_step_size=source_admm_step_size,
+            admm_start=source_admm_start, admm_start_normalize=source_admm_start_normalize,
+        )
+        z = source.x_source
+    else:
+        if initial_state.shape != y.shape or initial_state.device != y.device or initial_state.dtype != y.dtype:
+            raise ValueError("initial_state must match the conditioning tensor's shape, device and dtype.")
+        if not torch.isfinite(initial_state).all():
+            raise ValueError("initial_state must contain finite values.")
+        z = initial_state.clone()
 
     # time grid
     ts = torch.linspace(0.0, 1.0, steps + 1, device=device, dtype=y.dtype)

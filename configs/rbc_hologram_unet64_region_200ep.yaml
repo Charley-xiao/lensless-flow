@@ -1,0 +1,106 @@
+# Full 200-epoch training from random initialization with the established RBC loss.
+seed: 123
+device: cuda
+is_a100: true
+data:
+  dataset: rbc_hologram
+  path: E:/RBCs Holograms
+  split: train
+  eval_split: validation
+  downsample: 1
+  flip_ud: false
+  flip_lr: false
+  hologram_invert: false
+  phase_invert: false
+  max_samples: null
+  pin_memory: false
+  num_workers: 0
+train:
+  mode: vanilla
+  batch_size: 8
+  lr: 0.0002
+  epochs: 200
+  grad_clip: 1.0
+  amp: false
+  save_every: 5
+  save_since_epoch: 0.0
+  init_checkpoint: null
+  eval_at_start: true
+  metrics_path: outputs/rbc_region_scratch200/eval_metrics.jsonl
+  checkpoint_dir: checkpoints/rbc_region_scratch200
+  save_best_metric: eval/rbc_ssim
+  save_best_mode: max
+model:
+  name: unet
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 3
+  use_time_conditioning: true
+cfm:
+  matcher: rectified
+  t_min: 0.001
+  t_max: 0.999
+  t_distribution: beta
+  t_alpha: 0.5
+  t_beta: 0.5
+  sigma_data: 1.0
+  source:
+    mode: gaussian
+    sigma0: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0
+    rbc_region:
+      enabled: true
+      foreground_weight: 0.75
+      balance_mix: 0.5
+      mask:
+        window_size: 15
+        dispersion_threshold: 0.08
+        closing_iterations: 5
+        min_component_area: 80
+        reflect_pad: 48
+        min_fraction: 0.01
+        max_fraction: 0.85
+physics:
+  disable_in_eval: true
+  dc_step_size: 0.0
+  dc_steps: 0
+sample:
+  steps: 40
+  solver: heun
+  init_noise_std: 1.0
+  save_dir: outputs/rbc_region_scratch200
+ssim:
+  window_size: 11
+  sigma: 1.5
+  data_range: 1.0
+eval:
+  fixed_latent: true
+  seed: 20260903
+  seed_stride: 100003
+  rbc_regions: true
+  preview_dir: outputs/rbc_region_scratch200/previews
+wandb:
+  enabled: true
+  project: lensless-flow
+  entity: null
+  name: rbc_unet64_region_scratch_200ep
+  tags: [rbc, hologram, phase, pure-flow, unet64, beta-t, fixed-eval, region-balanced, pseudo-masks, from-scratch, 200-epochs]
+  log_every: 50
+  eval_batches: 128
+  log_images_every: 1
+  log_artifacts: false
+btb:
+  denom_min: 0.05
+sched:
+  enabled: true
+  metric: eval/rbc_ssim
+  mode: max
+  factor: 0.5
+  patience: 10
+  threshold: 0.0001
+  cooldown: 0
+  min_lr: 0.00002
+compile:
+  enabled: false

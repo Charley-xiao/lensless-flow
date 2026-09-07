@@ -143,6 +143,23 @@ For a larger 256x256 RBC run, use `configs/rbc_hologram_unet64.yaml`
 `configs/rbc_hologram_large_unet.yaml` uses five scales and about 110.7M
 parameters.
 
+For an opt-in RBC-focused loss, use `configs/rbc_hologram_unet64_region.yaml`.
+It blends ordinary flow velocity MSE with separately normalized RBC/background
+errors from detached phase-label pseudo-regions. Set `train.init_checkpoint` to
+a matching saved U-Net checkpoint for fine-tuning with a fresh optimizer.
+The [methodology](docs/rbc_region_loss_methodology.md) gives the equations,
+mask audit, limitations, and a paired comparison protocol; `balance_mix=0`
+provides an ordinary-loss control while retaining the regional metrics.
+Run `python -m scripts.audit_rbc_regions --config configs/rbc_hologram_unet64_region.yaml`
+to inspect the target-mask overlays before training on a different dataset.
+
+For a full 200-epoch run from random initialization, use
+`configs/rbc_hologram_unet64_region_200ep.yaml`. It uses the same modified loss,
+starts at learning rate `0.0002`, monitors RBC SSIM for LR scheduling, and saves
+the best RBC-SSIM checkpoint alongside periodic and final weights. The
+[training protocol](docs/rbc_region_scratch_200ep.md) records the rationale,
+settings, validation limitations, and remote execution details.
+
 For scripts that already expose a dedicated flag such as `--steps`, that explicit flag still takes precedence over the config value.
 
 The default training configs now use a compact `nafnet`-style backbone:

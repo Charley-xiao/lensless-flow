@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from tqdm import tqdm
 
@@ -10,17 +11,19 @@ import wandb
 
 from lensless_flow.config import load_config
 from lensless_flow.utils import set_seed, ensure_dir
-from lensless_flow.data import make_dataloader
+from lensless_flow.data import make_dataloader, HumanRBCHologramDataset
 from lensless_flow.physics import build_forward_operator_from_dataset
-from lensless_flow.model_factory import build_flow_model, resolve_model_name
+from lensless_flow.model_factory import build_flow_model, resolve_model_name, load_checkpoint_state_dict
 from lensless_flow.model_unet import use_time_conditioning_from_cfg
 from lensless_flow.flow_matching import (
     build_flow_matcher,
     normalize_flow_matcher_name,
     sample_flow_matching_training_batch,
     sample_t,
+    x0_from_xt_v,
 )
-from lensless_flow.losses import cfm_loss, physics_loss_from_v
+from lensless_flow.losses import cfm_loss, physics_loss_from_v, region_balanced_cfm_loss
+from lensless_flow.rbc_regions import rbc_region_mask, region_loss_config, region_eval_enabled, save_region_preview
 from lensless_flow.measurement_source import (
     source_mode_from_cfg,
     source_sampler_kwargs_from_cfg,
@@ -28,7 +31,7 @@ from lensless_flow.measurement_source import (
 )
 from lensless_flow.tensor_utils import to_nchw
 from lensless_flow.sampler import sample_with_physics_guidance
-from lensless_flow.metrics import ssim_torch, psnr
+from lensless_flow.metrics import ssim_torch, psnr, region_image_metrics
 
 
 def chw_to_wandb_image(x_bchw: torch.Tensor):
@@ -45,6 +48,25 @@ def data_loader_kwargs(cfg: dict) -> dict:
     data_cfg = dict(cfg.get("data", {}) or {})
     excluded = {"path", "split", "eval_split", "downsample", "flip_ud", "num_workers"}
     return {k: v for k, v in data_cfg.items() if k not in excluded}
+
+
+def save_eval_record(cfg: dict, metrics: dict, epoch: int, step: int) -> None:
+    """Optional durable evaluation history, including the warm-start baseline."""
+    path = cfg.get("train", {}).get("metrics_path")
+    if path:
+        ensure_dir(os.path.dirname(path) or ".")
+        record = {"epoch": epoch, "step": step, **metrics}
+        record = {key: (value if not isinstance(value, float) or torch.isfinite(torch.tensor(value)) else None)
+                  for key, value in record.items()}
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, allow_nan=False) + "\n")
+
+
+def save_checkpoint_atomic(state: dict, path: str) -> None:
+    """Keep the previous checkpoint intact until its replacement is complete."""
+    temporary_path = path + ".tmp"
+    torch.save(state, temporary_path)
+    os.replace(temporary_path, path)
 
 
 def _eval_seed_for_batch(cfg: dict, batch_idx: int, offset: int = 0) -> int | None:
@@ -79,7 +101,7 @@ def _call_with_preserved_rng(fn, seed: int | None, device: torch.device):
 
 
 @torch.no_grad()
-def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05, pred_type="btb"):
+def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05, pred_type="btb", epoch=None):
     """
     Validation:
       - Generate x_hat via sampler
@@ -93,6 +115,10 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
     psnr_list = []
     ssim_list = []
     dc_rmse_list = []
+    region_lists = {}
+    roi_cfg = region_loss_config(cfg)
+    previews = []
+    preview_dir = cfg.get("eval", {}).get("preview_dir")
 
     # SSIM params (optional overrides)
     ssim_cfg = cfg.get("ssim", {})
@@ -146,6 +172,16 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         ssim_val = float(ssim_torch(x_hat_c.float(), x_c.float(), window_size=ws, sigma=sigma, data_range=data_range).item())
         ssim_list.append(ssim_val)
 
+        if region_eval_enabled(cfg):
+            mask = rbc_region_mask(x_c, **roi_cfg.get("mask", {}))
+            region_values = region_image_metrics(
+                x_hat_c, x_c, mask, window_size=ws, sigma=sigma, data_range=data_range,
+            )
+            for key, values in region_values.items():
+                region_lists.setdefault(key, []).extend(values[torch.isfinite(values)].detach().cpu().tolist())
+            if preview_dir and len(previews) < 8:
+                previews.append(tuple(item[0].detach().cpu() for item in (y, x_c, x_hat_c, mask)))
+
         if Hop is not None:
             dc_err = (Hop.forward(x_hat.float()) - y.float()).pow(2).mean().sqrt().item()
             dc_rmse_list.append(dc_err)
@@ -153,13 +189,20 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
     def avg(lst):
         return float(sum(lst) / max(1, len(lst)))
 
-    return {
+    result = {
         "eval/l1": avg(l1_list),
         "eval/mse": avg(mse_list),
         "eval/psnr": avg(psnr_list),
         "eval/ssim": avg(ssim_list),
         "eval/dc_rmse": avg(dc_rmse_list) if dc_rmse_list else float("nan"),
     }
+    for key, values in region_lists.items():
+        result[f"eval/{key}"] = avg(values) if values else float("nan")
+        if key in {"rbc_psnr", "background_psnr"}:
+            result[f"eval/{key}_valid_samples"] = len(values)
+    if previews:
+        save_region_preview(os.path.join(preview_dir, f"epoch_{epoch if epoch is not None else 'eval'}.png"), previews)
+    return result
 
 
 def main(cfg):
@@ -189,6 +232,14 @@ def main(cfg):
     source_sigma0 = source_sigma0_from_cfg(cfg)
     source_kwargs = source_sampler_kwargs_from_cfg(cfg)
     cfm_cfg = cfg["cfm"]
+    roi_cfg = region_loss_config(cfg)
+    roi_enabled = bool(roi_cfg.get("enabled", False))
+    if (roi_enabled or region_eval_enabled(cfg)) and float(cfg["data"].get("downsample", 1)) != 1:
+        raise ValueError("RBC pseudo-region defaults require native sampling (data.downsample=1).")
+    if roi_enabled:
+        print("RBC region loss: detached target pseudo-masks; "
+              f"balance_mix={roi_cfg.get('balance_mix', 0.5)}, "
+              f"foreground_weight={roi_cfg.get('foreground_weight', 0.75)}")
     t_distribution = str(cfm_cfg.get("t_distribution", "uniform"))
     t_alpha = float(cfm_cfg.get("t_alpha", 0.5))
     t_beta = float(cfm_cfg.get("t_beta", 0.5))
@@ -220,6 +271,9 @@ def main(cfg):
             tags=wb_tags,
             config=cfg,
         )
+        # This summary reaches W&B before the potentially lengthy initial eval,
+        # providing a sync check without consuming a training history step.
+        wandb.run.summary["startup/initialized"] = True
 
     # -------------------------
     # Data
@@ -233,6 +287,8 @@ def main(cfg):
         path=cfg["data"].get("path", None),
         **data_loader_kwargs(cfg),
     )
+    if (roi_enabled or region_eval_enabled(cfg)) and not isinstance(train_ds, HumanRBCHologramDataset):
+        raise ValueError("RBC region mode is only audited for HumanRBCHologramDataset phase labels.")
 
     eval_batches = int(wb.get("eval_batches", 0) or 0)
     log_images_every = int(wb.get("log_images_every", 0) or 0)
@@ -258,6 +314,8 @@ def main(cfg):
         raise ValueError(f"Expected paired y/x tensors with matching CHW shape, got {tuple(y0.shape)} and {tuple(x0.shape)}")
     C = y0.shape[1]
     H_img, W_img = y0.shape[-2], y0.shape[-1]
+    if (roi_enabled or region_eval_enabled(cfg)) and (C != 1 or (H_img, W_img) != (256, 256)):
+        raise ValueError("RBC region mode expects the native 256x256 grayscale phase dataset.")
     Hop = build_forward_operator_from_dataset(train_ds, y0.to(device), device=device)
     if Hop is None:
         print("Forward operator: none (pure conditional flow)")
@@ -271,6 +329,15 @@ def main(cfg):
     # Model
     # -------------------------
     model_name = resolve_model_name(cfg)
+    init_checkpoint = cfg.get("train", {}).get("init_checkpoint")
+    init_state = None
+    if init_checkpoint:
+        init_state = torch.load(init_checkpoint, map_location="cpu", weights_only=True)
+        saved_mode = init_state.get("mode", init_state.get("cfg", {}).get("train", {}).get("mode"))
+        if saved_mode is not None and saved_mode != pred_type:
+            raise ValueError("Fine-tuning checkpoint prediction mode must match train.mode.")
+        if resolve_model_name(cfg, init_state) != model_name:
+            raise ValueError("Fine-tuning checkpoint architecture must match model.name.")
     model = build_flow_model(
         cfg=cfg,
         img_channels=C,
@@ -278,6 +345,15 @@ def main(cfg):
         device=device,
         checkpoint_state=None,
     )
+    if init_state is not None:
+        saved_time = init_state.get("use_time_conditioning", init_state.get("cfg", {}).get("model", {}).get("use_time_conditioning"))
+        if saved_time is not None and bool(saved_time) != use_time_conditioning:
+            raise ValueError("Fine-tuning checkpoint time conditioning must match the model config.")
+        load_checkpoint_state_dict(model, init_state)
+        del init_state
+        print("Initialized model weights from", init_checkpoint, "(fresh optimizer and epoch count)")
+    else:
+        print("Initialized model weights randomly (no checkpoint; fresh optimizer and epoch count)")
     print("Model:", model_name)
     print("Model params:", sum(p.numel() for p in model.parameters()))
     if cfg.get("compile", {}).get("enabled", True) and device.type == "cuda":
@@ -287,7 +363,7 @@ def main(cfg):
     scaler = GradScaler("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda")
 
     # -------------------------
-    # ReduceLROnPlateau on eval/ssim (maximize)
+    # ReduceLROnPlateau on the configured validation metric
     # -------------------------
     sched_cfg = cfg.get("sched", {})
     use_sched = bool(sched_cfg.get("enabled", False))
@@ -306,7 +382,16 @@ def main(cfg):
             min_lr=float(sched_cfg.get("min_lr", 1e-6)),
         )
 
-    ensure_dir("checkpoints")
+    checkpoint_dir = str(cfg.get("train", {}).get("checkpoint_dir", "checkpoints"))
+    ensure_dir(checkpoint_dir)
+    best_metric = cfg.get("train", {}).get("save_best_metric")
+    best_mode = str(cfg.get("train", {}).get("save_best_mode", "max"))
+    best_score = None
+    if best_metric:
+        if best_mode not in {"min", "max"}:
+            raise ValueError("train.save_best_mode must be 'min' or 'max'.")
+        if eval_batches <= 0 or test_dl is None:
+            raise ValueError("train.save_best_metric requires validation each epoch.")
     denom_min = float(cfg.get("btb", {}).get("denom_min", 0.05))
 
     log_every = int(wb.get("log_every", 50))
@@ -315,6 +400,25 @@ def main(cfg):
     if save_since_epoch < 1.0:
         save_since_epoch = int(cfg["train"]["epochs"] * save_since_epoch)
     eval_metrics = {}
+
+    if bool(cfg.get("train", {}).get("eval_at_start", False)):
+        if eval_batches <= 0 or test_dl is None:
+            raise ValueError("train.eval_at_start requires wandb.eval_batches > 0.")
+        print("Evaluating initial weights on the fixed validation subset...")
+        eval_metrics = quick_eval(
+            model, Hop, test_dl, cfg, device, max_batches=eval_batches,
+            denom_min=denom_min, pred_type=pred_type,
+            epoch=0,
+        )
+        print("Initial evaluation:", eval_metrics)
+        save_eval_record(cfg, eval_metrics, epoch=0, step=global_step)
+        if use_wandb:
+            wandb.log({"epoch": 0, **eval_metrics}, step=global_step)
+        # DataLoader iteration can consume a Torch RNG seed even without shuffle.
+        # Reset before training so enabling baseline evaluation cannot change
+        # the training data order or source/time samples in paired experiments.
+        set_seed(cfg["seed"])
+        global_step += 1
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
@@ -353,6 +457,12 @@ def main(cfg):
             x_t = fm_batch.x_t
             v_star = fm_batch.v_target
             y_cond = fm_batch.y_cond
+            roi_mask = None
+            if roi_enabled:
+                # This identity follows the sampled coupling, including OT
+                # reordering. Original x may be in a different batch order.
+                matched_target = x0_from_xt_v(x_t, v_star, t).detach()
+                roi_mask = rbc_region_mask(matched_target, **roi_cfg.get("mask", {}))
 
             den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
 
@@ -366,7 +476,16 @@ def main(cfg):
                     x_pred = out
                     v_pred = (x_pred - x_t) / den
 
-                loss_v = cfm_loss(v_pred, v_star) * cfg["cfm"]["loss"]["v_weight"]
+                region_stats = {}
+                if roi_mask is not None:
+                    velocity_loss, region_stats = region_balanced_cfm_loss(
+                        v_pred, v_star, roi_mask,
+                        foreground_weight=float(roi_cfg.get("foreground_weight", 0.75)),
+                        balance_mix=float(roi_cfg.get("balance_mix", 0.5)),
+                    )
+                else:
+                    velocity_loss = cfm_loss(v_pred, v_star)
+                loss_v = velocity_loss * cfg["cfm"]["loss"]["v_weight"]
 
                 loss_phys = torch.tensor(0.0, device=device)
                 if cfg["cfm"]["loss"]["physics_weight"] > 0:
@@ -432,6 +551,9 @@ def main(cfg):
                     "diag/v_pred_rms": rms(v_pred),
                     "diag/nan_or_inf": float(nan_or_inf),
                 }
+                for key, value in region_stats.items():
+                    if torch.isfinite(value):
+                        log_dict[f"train/region_{key}"] = float(value)
                 if fm_batch.x_init is not None:
                     log_dict["diag/x_init_rms"] = rms(fm_batch.x_init)
                 if pred_type == "btb" and x_pred is not None:
@@ -460,7 +582,7 @@ def main(cfg):
             )
 
         # -------------------------
-        # Validation + LR scheduler step (monitor eval/ssim)
+        # Validation + LR scheduler step
         # -------------------------
         if eval_batches > 0 and test_dl is not None:
             eval_metrics = quick_eval(
@@ -468,7 +590,9 @@ def main(cfg):
                 max_batches=eval_batches,
                 denom_min=denom_min,
                 pred_type=pred_type,
+                epoch=epoch,
             )
+            save_eval_record(cfg, eval_metrics, epoch=epoch, step=global_step)
             if use_wandb:
                 wandb.log(eval_metrics, step=global_step)
             else:
@@ -479,7 +603,10 @@ def main(cfg):
                     raise KeyError(
                         f"sched.metric='{sched_metric}' not found in eval_metrics keys: {list(eval_metrics.keys())}"
                     )
-                scheduler.step(eval_metrics[sched_metric])
+                # An absent pseudo-region has no score; it should not trigger
+                # an LR reduction as if it were a failed reconstruction.
+                if torch.isfinite(torch.tensor(eval_metrics[sched_metric])):
+                    scheduler.step(eval_metrics[sched_metric])
 
                 if use_wandb:
                     wandb.log({"sched/lr_after": float(opt.param_groups[0]["lr"])}, step=global_step)
@@ -522,24 +649,47 @@ def main(cfg):
                 step=global_step,
             )
 
-        # checkpoint
-        if epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch or epoch == 1: # always save epoch 1 for sanity check
+        # Preserve periodic/final weights and optionally the best validation model.
+        save_periodic = (
+            (epoch % cfg["train"]["save_every"] == 0 and epoch >= save_since_epoch)
+            or epoch == 1 or epoch == cfg["train"]["epochs"]
+        )
+        save_best = False
+        if best_metric:
+            if best_metric not in eval_metrics:
+                raise KeyError(f"train.save_best_metric='{best_metric}' not found in eval_metrics.")
+            score = float(eval_metrics[best_metric])
+            if torch.isfinite(torch.tensor(score)):
+                save_best = best_score is None or (score > best_score if best_mode == "max" else score < best_score)
+                if save_best:
+                    best_score = score
+        if save_periodic or save_best:
+            checkpoint_state = {
+                "model": model.state_dict(),
+                "cfg": cfg,
+                "mode": pred_type,
+                "matcher": flow_matcher_name,
+                "source_mode": source_mode,
+                "source_sigma0": source_sigma0,
+                "model_name": model_name,
+                "use_time_conditioning": use_time_conditioning,
+                "epoch": epoch,
+                "global_step": global_step,
+                "eval_metrics": eval_metrics,
+            }
+        if save_best:
+            best_path = os.path.join(checkpoint_dir, "best.pt")
+            save_checkpoint_atomic(checkpoint_state, best_path)
+            print(f"Saved best: {best_path} (epoch {epoch}, {best_metric}={best_score:.6f})")
+            if use_wandb:
+                wandb.run.summary["best/epoch"] = epoch
+                wandb.run.summary["best/metric"] = best_metric
+                wandb.run.summary["best/score"] = best_score
+        if save_periodic:
             ssim = eval_metrics.get("eval/ssim", 0.0)
             dataset_tag = str(cfg.get("data", {}).get("dataset", "lensless")).lower().replace("-", "_")
-            ckpt_path = f"checkpoints/cfm_{dataset_tag}_{pred_type}_{flow_matcher_name}_{time_tag}_epoch{epoch}_ssim{ssim:.4f}.pt"
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "cfg": cfg,
-                    "mode": pred_type,
-                    "matcher": flow_matcher_name,
-                    "source_mode": source_mode,
-                    "source_sigma0": source_sigma0,
-                    "model_name": model_name,
-                    "use_time_conditioning": use_time_conditioning,
-                },
-                ckpt_path,
-            )
+            ckpt_path = os.path.join(checkpoint_dir, f"cfm_{dataset_tag}_{pred_type}_{flow_matcher_name}_{time_tag}_epoch{epoch}_ssim{ssim:.4f}.pt")
+            save_checkpoint_atomic(checkpoint_state, ckpt_path)
             print("Saved:", ckpt_path)
 
             if use_wandb and bool(wb.get("log_artifacts", True)):

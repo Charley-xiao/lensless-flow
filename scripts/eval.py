@@ -9,9 +9,10 @@ import torch
 import torch.nn as nn
 
 from lensless_flow.config import load_config
-from lensless_flow.data import make_dataloader
+from lensless_flow.data import make_dataloader, HumanRBCHologramDataset
 from lensless_flow.flow_matching import normalize_flow_matcher_name
-from lensless_flow.metrics import psnr, ssim_torch
+from lensless_flow.metrics import psnr, ssim_torch, region_image_metrics
+from lensless_flow.rbc_regions import rbc_region_mask, region_loss_config, region_eval_enabled
 from lensless_flow.model_factory import (
     build_baseline_unet as build_baseline_unet_model,
     build_flow_model as build_flow_model_impl,
@@ -185,6 +186,9 @@ def _print_method_summary(
     print(f"SSIM avg: {_avg(stats['ssim']):.6f}")
     print(f"LPIPS avg: {_avg(stats['lpips']):.6f}")
     print(f"MSE avg: {_avg(stats['mse']):.8f}")
+    for key in ("rbc_psnr", "rbc_ssim", "rbc_circular_rmse_rad", "background_psnr", "background_ssim", "rbc_fraction"):
+        if key in stats:
+            print(f"{key} avg: {_avg(stats[key]):.6f} (valid samples: {len(stats[key])})")
     dc_avg = _avg(stats["dc_rmse"])
     if math.isnan(dc_avg):
         print("Data-consistency RMSE avg: n/a")
@@ -215,6 +219,14 @@ def main(
     fixed_latent: bool,
 ):
     device = torch.device(flow_cfg["device"] if torch.cuda.is_available() else "cpu")
+    roi_cfg = region_loss_config(flow_cfg)
+    roi_eval = region_eval_enabled(flow_cfg)
+    ssim_cfg = flow_cfg.get("ssim", {})
+    ssim_kwargs = dict(window_size=int(ssim_cfg.get("window_size", 11)),
+                       sigma=float(ssim_cfg.get("sigma", 1.5)),
+                       data_range=float(ssim_cfg.get("data_range", 1.0)))
+    if roi_eval and float(flow_cfg["data"].get("downsample", 1)) != 1:
+        raise ValueError("RBC region evaluation requires data.downsample=1.")
 
     flow_state = torch.load(ckpt, map_location=device)
     pred_type = str(
@@ -243,6 +255,9 @@ def main(
     y0 = to_nchw(y0)
     img_channels = int(y0.shape[1])
     im_hw = (int(y0.shape[-2]), int(y0.shape[-1]))
+    if roi_eval and (not isinstance(test_ds, HumanRBCHologramDataset)
+                     or img_channels != 1 or im_hw != (256, 256)):
+        raise ValueError("RBC region evaluation expects native 256x256 HumanRBCHologramDataset phase labels.")
 
     Hop = build_forward_operator_from_dataset(test_ds, y0.to(device), device=device)
 
@@ -343,6 +358,7 @@ def main(
         total_samples += int(x.shape[0])
 
         x_c = x.clamp(0, 1)
+        roi_mask = rbc_region_mask(x_c, **roi_cfg.get("mask", {})) if roi_eval else None
         x_lpips = _prepare_lpips_input(x_c)
         x_fid = _prepare_fid_input(x_c)
 
@@ -374,6 +390,10 @@ def main(
             stats[method_name]["mse"].extend(mse_values.detach().cpu().tolist())
             stats[method_name]["psnr"].extend(psnr_values)
             stats[method_name]["ssim"].extend(ssim_values)
+            if roi_mask is not None:
+                region_values = region_image_metrics(x_hat_c, x_c, roi_mask, **ssim_kwargs)
+                for key, values in region_values.items():
+                    stats[method_name].setdefault(key, []).extend(values[torch.isfinite(values)].detach().cpu().tolist())
             stats[method_name]["dc_rmse"].extend(dc_values.detach().cpu().tolist())
             stats[method_name]["lpips"].extend(lpips_values.detach().float().cpu().tolist())
             stats[method_name]["gen_time_ms_per_sample"].extend(
