@@ -14,7 +14,8 @@ from scripts.benchmark_rbc_reconstruction import write_json
 
 LABELS = {'original_e105':'Original flow, epoch 105', 'original_e95':'Original flow, epoch 95',
           'region_final':'Modified-loss flow, final', 'offaxis_input_only':'Off-axis physics',
-          'measurement':'Raw hologram', 'constant_0_5':'Constant 0.5'}
+          'measurement':'Raw hologram', 'constant_0_5':'Constant 0.5',
+          'scratch_best':'Modified-loss flow, scratch best'}
 
 
 def number(value, digits=4):
@@ -38,6 +39,7 @@ def main(args):
     protocol=json.loads((root/'metrics/metric_protocol.json').read_text())
     n=manifest['samples']
     methods=completed['methods']
+    labels={name: LABELS.get(name, name) for name in methods}
     if completed['samples_per_method'] != n or any(summary[name]['samples'] != n for name in methods):
         raise ValueError('Report requires the same complete image set for every method.')
     report=root/'report'
@@ -47,14 +49,14 @@ def main(args):
     selected=np.linspace(0,n-1,min(8,n),dtype=int).tolist()
     write_json(report/'visual_indices.json',{'selection':'evenly spaced sorted indices, independent of performance','indices':selected})
     image_links=[]
-    visual_methods=[name for name in ['original_e105','original_e95','region_final','offaxis_input_only'] if name in methods]
+    visual_methods=[name for name in methods if name not in ['measurement','constant_0_5']]
     for page,begin in enumerate(range(0,len(selected),4),start=1):
         indices=selected[begin:begin+4]
         fig,axes=plt.subplots(len(indices),len(visual_methods)+2,figsize=(18,3*len(indices)),squeeze=False,layout='constrained')
         for row,index in enumerate(indices):
             y,x=dataset[index]
             images=[y.numpy()[...,0],x.numpy()[...,0]]+[predictions[name][index,0] for name in visual_methods]
-            titles=['Hologram','Phase target']+[LABELS[name] for name in visual_methods]
+            titles=['Hologram','Phase target']+[labels[name] for name in visual_methods]
             for col,(image,title) in enumerate(zip(images,titles)):
                 ax=axes[row,col]
                 ax.imshow(image,cmap='gray',vmin=0,vmax=1)
@@ -69,7 +71,9 @@ def main(args):
             ('rbc_psnr','RBC pseudo-region PSNR (dB)',False),('rbc_ssim','RBC pseudo-region SSIM',False),
             ('lpips','LPIPS (lower is better)',False),('fid','FID (lower is better)',True)]
     fig,axes=plt.subplots(2,3,figsize=(15,10),layout='constrained')
-    short=['Flow e105','Flow e95','Region loss','Physics','Hologram','Flat 0.5']
+    short_names={'original_e105':'Flow e105','original_e95':'Flow e95','region_final':'Fine-tuned',
+                 'scratch_best':'Scratch best','offaxis_input_only':'Physics','measurement':'Hologram','constant_0_5':'Flat 0.5'}
+    short=[short_names.get(name,name) for name in methods]
     for ax,(key,title,dataset_metric) in zip(axes.flat,panels):
         values=[summary[name]['fid'] if dataset_metric else summary[name]['metrics'][key]['mean'] for name in methods]
         ax.bar(np.arange(len(methods)),values,color=['#5a7fa5','#7b97b5','#bd643e','#378673','#aaa7a3','#c8c5c1'])
@@ -84,16 +88,17 @@ def main(args):
         if [int(row['index']) for row in all_rows[name]] != list(range(n)):
             raise ValueError(f'Incomplete or misordered per-image CSV: {name}')
     paired=[]
-    for base in ['original_e105','original_e95','offaxis_input_only']:
-        if base not in methods or 'region_final' not in methods: continue
+    candidate_name='scratch_best' if 'scratch_best' in methods else 'region_final'
+    for base in ['original_e105','original_e95','region_final','offaxis_input_only']:
+        if base not in methods or candidate_name not in methods or base==candidate_name: continue
         for key,higher in [('psnr',True),('ssim',True),('rbc_psnr',True),('rbc_ssim',True),('lpips',False),('rbc_circular_rmse_rad',False)]:
             differences=[]
-            for candidate,reference in zip(all_rows['region_final'],all_rows[base]):
+            for candidate,reference in zip(all_rows[candidate_name],all_rows[base]):
                 if candidate[key] and reference[key]:
                     differences.append(float(candidate[key])-float(reference[key]))
             values=np.asarray(differences)
             wins=values>0 if higher else values<0
-            paired.append(dict(candidate='region_final',reference=base,metric=key,n=len(values),
+            paired.append(dict(candidate=candidate_name,reference=base,metric=key,n=len(values),
                 mean_difference=float(values.mean()) if len(values) else None,
                 median_difference=float(np.median(values)) if len(values) else None,
                 win_fraction=float(wins.mean()) if len(values) else None))
@@ -105,14 +110,14 @@ def main(args):
     global_rows=[];region_rows=[];runtime_rows=[]
     for name in methods:
         item=summary[name]; m=item['metrics']
-        global_rows.append([LABELS[name],n,*[number(m[key]['mean']) for key in ['psnr','ssim','mae','rmse','lpips']],number(item['fid'],3)])
-        region_rows.append([LABELS[name],m['rbc_psnr']['n'],*[number(m[key]['mean']) for key in ['rbc_psnr','rbc_ssim','rbc_circular_rmse_rad','background_psnr','background_ssim']]])
-        runtime_rows.append([LABELS[name],*[number(m[key]['mean']) for key in ['interior_psnr','interior_ssim','circular_rmse_rad','runtime_ms','clipped_fraction']]])
+        global_rows.append([labels[name],n,*[number(m[key]['mean']) for key in ['psnr','ssim','mae','rmse','lpips']],number(item['fid'],3)])
+        region_rows.append([labels[name],m['rbc_psnr']['n'],*[number(m[key]['mean']) for key in ['rbc_psnr','rbc_ssim','rbc_circular_rmse_rad','background_psnr','background_ssim']]])
+        runtime_rows.append([labels[name],*[number(m[key]['mean']) for key in ['interior_psnr','interior_ssim','circular_rmse_rad','runtime_ms','clipped_fraction']]])
     best_global=max(methods,key=lambda name:summary[name]['metrics']['ssim']['mean'])
     best_rbc=max(methods,key=lambda name:summary[name]['metrics']['rbc_ssim']['mean'])
-    observations=(f"The highest mean global SSIM is achieved by **{LABELS[best_global]}** "
+    observations=(f"The highest mean global SSIM is achieved by **{labels[best_global]}** "
                   f"({number(summary[best_global]['metrics']['ssim']['mean'])}); "
-                  f"the highest mean RBC pseudo-region SSIM is achieved by **{LABELS[best_rbc]}** "
+                  f"the highest mean RBC pseudo-region SSIM is achieved by **{labels[best_rbc]}** "
                   f"({number(summary[best_rbc]['metrics']['rbc_ssim']['mean'])}).")
     if 'region_final' in summary and 'original_e105' in summary:
         delta_psnr=summary['region_final']['metrics']['rbc_psnr']['mean']-summary['original_e105']['metrics']['rbc_psnr']['mean']
@@ -121,15 +126,24 @@ def main(args):
                        f"RBC PSNR by {delta_psnr:+.4f} dB and RBC SSIM by {delta_ssim:+.4f}. "
                        "This before/after comparison includes additional training and a fresh optimizer; "
                        "it cannot isolate the loss change from those factors.")
+    method_notes=[]
+    if 'original_e105' in methods:
+        method_notes.append('The original epoch-105 flow is the exact initialization of the five-epoch fine-tuned model.')
+    if 'original_e95' in methods:
+        method_notes.append('The original epoch-95 flow had the highest recorded global SSIM on the 128-image monitoring subset among the saved original checkpoints.')
+    if 'region_final' in methods:
+        method_notes.append('The fine-tuned modified-loss model is the final checkpoint after five additional epochs from epoch 105.')
+    if 'scratch_best' in methods:
+        selection=json.loads((root/'checkpoint_selection.json').read_text())
+        method_notes.append(f"The from-scratch modified-loss model completed {selection['completed_epoch']} epochs. "
+                            f"Its best checkpoint is epoch {selection['best_epoch']}, selected by {selection['selection_metric']} "
+                            f"on the first {selection['selection_samples']} validation images, before this full-split evaluation.")
+    method_notes.append('The off-axis method uses the frozen input-only Fourier sideband reconstruction; no target-assisted sign, piston, tilt, or scale fitting enters its prediction. Raw hologram and constant-0.5 baselines expose background-driven scores.')
     lines=['# RBC full-split reconstruction comparison','',
         f"Evaluated **{n:,} paired images per method** from the supplied `Validation` split ({manifest['dataset_total']:,} pairs available). "
         + ('This is the complete supplied split.' if n==manifest['dataset_total'] else '**SMOKE TEST ONLY; this is not the full-set result.**'),'',
         '## Methods and checkpoint selection','',
-        'The original epoch-105 flow is the exact initialization of the modified-loss model. '
-        'The original epoch-95 flow had the highest recorded global SSIM on the 128-image monitoring subset among the saved original checkpoints. '
-        'The modified-loss model is the final checkpoint after five additional epochs from epoch 105. '
-        'The off-axis method uses the frozen input-only Fourier sideband reconstruction; no target-assisted sign, piston, tilt, or scale fitting enters its prediction. '
-        'Raw hologram and constant-0.5 baselines expose background-driven scores.', '',
+        ' '.join(method_notes), '',
         '## Findings','',observations,'',
         '## Global metrics','',table(['Method','Images','PSNR ↑','SSIM ↑','MAE ↓','RMSE ↓','LPIPS ↓','FID ↓'],global_rows),'',
         '## RBC and background metrics','',table(['Method','RBC-valid images','RBC PSNR ↑','RBC SSIM ↑','RBC circular RMSE ↓','Background PSNR ↑','Background SSIM ↑'],region_rows),'',
@@ -146,7 +160,7 @@ def main(args):
         'All image metrics use predictions clamped to [0,1], fixed data range one, and no independent contrast normalization. PSNR is averaged per image; FID is a single distribution-level score over every real and generated image. '
         'LPIPS uses AlexNet v0.1 with grayscale repeated to RGB in [-1,1]. FID uses 2048-dimensional Inception features and float64 moment accumulation. These natural-image feature metrics are supporting measurements, not validated biological measures.', '',
         'The dataset supplies Training and Validation folders, with no separate untouched test folder. '
-        'Training checkpoint monitoring and epoch-95 selection used the first 128 validation images, which are included here as requested. '
+        'Training checkpoint monitoring and checkpoint selection used the first 128 validation images, which are included here as requested. '
         'The prior split audit found training crop siblings for 7,088/7,373 validation files. Consequently these results describe the supplied split and cannot establish independent acquisition-level generalization. '
         'Paired differences are descriptive crop-level comparisons; no independent-sample significance or confidence interval is claimed.', '',
         '## Visual comparison','',
@@ -159,7 +173,7 @@ def main(args):
         '- [Metric protocol and package versions](../metrics/metric_protocol.json)',
         '- [Checkpoint hashes, settings, and all paired filenames](../manifest.json)',
         '- [Executed source-file hashes](../source_hashes.txt)',
-        *[f'- [{LABELS[name]}: all per-image metrics](../metrics/{name}_per_image.csv)' for name in methods], '',
+        *[f'- [{labels[name]}: all per-image metrics](../metrics/{name}_per_image.csv)' for name in methods], '',
         'Sources for metric conventions: [LPIPS implementation](https://github.com/richzhang/PerceptualSimilarity), '
         '[TorchMetrics FID](https://lightning.ai/docs/torchmetrics/stable/image/frechet_inception_distance.html).','']
     (report/'comparison.md').write_text('\n'.join(lines),encoding='utf-8')
