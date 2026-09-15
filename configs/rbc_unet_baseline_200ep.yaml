@@ -1,0 +1,76 @@
+# Deterministic direct hologram-to-phase U-Net; uniform image MSE, random initialization.
+seed: 123
+device: cuda
+is_a100: true  # Existing switch enabling TF32 on CUDA; not a hardware requirement.
+data:
+  dataset: rbc_hologram
+  path: E:/RBCs Holograms
+  split: train
+  eval_split: validation
+  downsample: 1
+  flip_ud: false
+  flip_lr: false
+  hologram_invert: false
+  phase_invert: false
+  max_samples: null
+  pin_memory: false
+  num_workers: 0
+model:
+  name: unet
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 3
+  use_time_conditioning: false
+train:
+  mode: supervised
+  loss: mse
+  init_checkpoint: null
+  epochs: 200
+  batch_size: 8
+  lr: 0.0002
+  grad_clip: 1.0
+  amp: false
+  save_dir: checkpoints/rbc_unet_baseline_200ep
+  save_every: 5
+  eval_every: 1
+  eval_batches: 128
+  eval_at_start: true
+  metrics_path: outputs/rbc_unet_baseline_200ep/eval_metrics.jsonl
+  best_checkpoints:
+    best: eval/rbc_ssim
+    best_global_ssim: eval/ssim
+eval:
+  batch_size: 1
+  rbc_regions: true
+  preview_dir: outputs/rbc_unet_baseline_200ep/previews
+  rbc_mask:
+    window_size: 15
+    dispersion_threshold: 0.08
+    closing_iterations: 5
+    min_component_area: 80
+    reflect_pad: 48
+    min_fraction: 0.01
+    max_fraction: 0.85
+ssim:
+  window_size: 11
+  sigma: 1.5
+  data_range: 1.0
+sched:
+  enabled: true
+  metric: eval/rbc_ssim
+  mode: max
+  factor: 0.5
+  patience: 10
+  threshold: 0.0001
+  cooldown: 0
+  min_lr: 0.00002
+compile:
+  enabled: false
+wandb:
+  enabled: true
+  project: lensless-flow
+  entity: charleyxiao057-
+  name: rbc_unet_direct_mse_200ep
+  tags: [rbc, hologram, phase, unet64, supervised, direct-image, mse, from-scratch, 200-epochs]
+  log_every: 50
+  log_images_every: 1

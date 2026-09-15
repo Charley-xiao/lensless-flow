@@ -160,6 +160,23 @@ the best RBC-SSIM checkpoint alongside periodic and final weights. The
 [training protocol](docs/rbc_region_scratch_200ep.md) records the rationale,
 settings, validation limitations, and remote execution details.
 
+For a direct supervised U-Net baseline, run:
+
+```bash
+python -m scripts.train_unet_baseline --config configs/rbc_unet_baseline_200ep.yaml
+```
+
+This trains the same residual convolutional backbone for 200 epochs from random
+initialization, predicting the phase image in one forward pass with uniform image
+MSE. Time conditioning is disabled. The fixed 128-image validation monitor records
+global and RBC/background metrics; separate best-RBC-SSIM and best-global-SSIM
+checkpoints are retained. See the [baseline methodology](docs/rbc_unet_baseline_200ep.md)
+for equations, matching settings, and the remote execution record.
+The [full validation comparison](docs/rbc_unet_best_validation_comparison.md)
+records the selected epoch-138 U-Net after training was stopped at the user's
+request, with all metrics, matched reconstruction timings, and eight-sample PDF
+figures in `output/pdf/`.
+
 For scripts that already expose a dedicated flag such as `--steps`, that explicit flag still takes precedence over the config value.
 
 The default training configs now use a compact `nafnet`-style backbone:

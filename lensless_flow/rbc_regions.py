@@ -19,7 +19,8 @@ def region_eval_enabled(cfg: dict) -> bool:
     return bool(cfg.get("eval", {}).get("rbc_regions", region_loss_config(cfg).get("enabled", False)))
 
 
-def save_region_preview(path: str, examples: list[tuple[torch.Tensor, ...]]) -> None:
+def save_region_preview(path: str, examples: list[tuple[torch.Tensor, ...]],
+                        prediction_title: str = "Flow reconstruction") -> None:
     """Save a fixed [0,1] scale validation grid; tensors are single CHW images."""
     from pathlib import Path
     from PIL import Image, ImageDraw
@@ -30,7 +31,7 @@ def save_region_preview(path: str, examples: list[tuple[torch.Tensor, ...]]) -> 
     header = 24
     canvas = Image.new("RGB", (4 * width, header + len(examples) * height), "white")
     draw = ImageDraw.Draw(canvas)
-    for column, title in enumerate(("Hologram", "Phase target", "Flow reconstruction", "Target pseudo-region (red)")):
+    for column, title in enumerate(("Hologram", "Phase target", prediction_title, "Target pseudo-region (red)")):
         draw.text((column * width + 6, 6), title, fill="black")
     for row, (hologram, target, prediction, mask) in enumerate(examples):
         arrays = [item.detach().float().cpu().numpy()[0] for item in (hologram, target, prediction, mask)]
