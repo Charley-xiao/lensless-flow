@@ -19,3 +19,5 @@ datasets
 wandb
 huggingface_hub
 torchcfm
+tifffile
+kornia>=0.7

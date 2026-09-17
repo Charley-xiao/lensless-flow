@@ -499,3 +499,18 @@ Upstream project:
 - LenslessPiCam — https://github.com/LCAV/LenslessPiCam
 
 See `LICENSE` and `THIRD_PARTY_NOTICES.md` for details.
+# PLD RML flow experiment
+
+The 4x RGB RML dataset is supported by `data.dataset=pld_rml`. Use the existing
+remote data at `/home/qiwen/datasets/parallel_lensless`; no full local download is
+required. See [the detailed methodology](PLD_RML_FLOW_METHODOLOGY.md) for official
+splits, registered targets, spatial loss weighting, and evaluation geometry.
+
+```bash
+python -m scripts.train --config configs/pld_rml_unet64_flow_200ep.yaml
+python -m scripts.eval_pld_rml --config configs/pld_rml_unet64_flow_200ep.yaml --checkpoint checkpoints/best.pt --split validation
+```
+
+This configuration trains a time-conditioned flow from scratch for 200 epochs.
+Epoch model selection uses 128 fixed validation images; the evaluation command
+uses the complete validation split unless `--max_samples` is explicitly supplied.

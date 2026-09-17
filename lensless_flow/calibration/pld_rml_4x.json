@@ -1,0 +1,22 @@
+{
+  "source": "https://github.com/lakabuli/ConvRML/blob/0a895cb372a3c7090904027ed7c82fc0a74133c5/homography_matrices/GT2RML_homography_4x_2026_detached_numpy.npy",
+  "source_sha256": "433770869de06b9338d4faef96bf7e67a3754d1306d98364555a72ecd59f5299",
+  "conversion": "torch.load(weights_only=True), stored as float32 values without rounding",
+  "gt_to_rml": [
+    [
+      1.054884672164917,
+      -0.009376643225550652,
+      0.6824379563331604
+    ],
+    [
+      0.009480852633714676,
+      1.0666083097457886,
+      -22.728910446166992
+    ],
+    [
+      2.9103830456733704e-11,
+      0.0,
+      1.0
+    ]
+  ]
+}

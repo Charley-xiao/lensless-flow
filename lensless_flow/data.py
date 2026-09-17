@@ -798,11 +798,14 @@ def _normalize_dataset_name(name: str | None) -> str:
         "rbc_holograms": "rbc_hologram",
         "human_rbc": "rbc_hologram",
         "human_rbc_hologram": "rbc_hologram",
+        "pld_rml": "pld_rml",
+        "parallel_lensless_rml": "pld_rml",
+        "convrml_rml": "pld_rml",
     }
     if key not in aliases:
         raise ValueError(
             f"Unsupported data.dataset='{name}'. "
-            "Expected 'diffusercam' or 'rbc_hologram'."
+            "Expected 'diffusercam', 'rbc_hologram', or 'pld_rml'."
         )
     return aliases[key]
 
@@ -958,7 +961,15 @@ def make_dataloader(
     **data_kwargs,
 ):
     dataset_name = _normalize_dataset_name(dataset)
-    if dataset_name == "rbc_hologram":
+    if dataset_name == "pld_rml":
+        from .data_pld import ParallelLenslessRMLDataset
+        ds = ParallelLenslessRMLDataset(
+            root=path, split=split, downsample=downsample, flip_ud=flip_ud,
+            flip_lr=bool(data_kwargs.get("flip_lr", False)),
+            max_samples=data_kwargs.get("max_samples"),
+            smoke_test=bool(data_kwargs.get("smoke_test", False)),
+        )
+    elif dataset_name == "rbc_hologram":
         ds = HumanRBCHologramDataset(
             root=path,
             split=split,

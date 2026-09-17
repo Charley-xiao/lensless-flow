@@ -22,7 +22,9 @@ from lensless_flow.flow_matching import (
     sample_t,
     x0_from_xt_v,
 )
-from lensless_flow.losses import cfm_loss, physics_loss_from_v, region_balanced_cfm_loss
+from lensless_flow.losses import cfm_loss, physics_loss_from_v, region_balanced_cfm_loss, spatial_cfm_loss
+from lensless_flow.data_pld import ParallelLenslessRMLDataset
+from lensless_flow.pld_protocol import rml_evaluation_pair, save_rml_preview
 from lensless_flow.rbc_regions import rbc_region_mask, region_loss_config, region_eval_enabled, save_region_preview
 from lensless_flow.measurement_source import (
     source_mode_from_cfg,
@@ -119,6 +121,8 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
     roi_cfg = region_loss_config(cfg)
     previews = []
     preview_dir = cfg.get("eval", {}).get("preview_dir")
+    rml_eval = cfg.get("eval", {}).get("protocol") == "pld_rml_common_gt"
+    full_psnr_list = []
 
     # SSIM params (optional overrides)
     ssim_cfg = cfg.get("ssim", {})
@@ -136,6 +140,15 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         x = to_nchw(x).to(device)
 
         latent_seed = _eval_seed_for_batch(cfg, i)
+        if rml_eval:
+            if y.shape[0] != 1:
+                raise ValueError("PLD evaluation uses batch_size=1 for stable per-scene latent seeds")
+            dataset, index = test_dl.dataset, i
+            from torch.utils.data import Subset
+            while isinstance(dataset, Subset):
+                index = dataset.indices[index]
+                dataset = dataset.dataset
+            latent_seed = _eval_seed_for_batch(cfg, dataset.ids[index])
 
         def _sample():
             return sample_with_physics_guidance(
@@ -163,14 +176,19 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         # metrics in [0,1]
         x_hat_c = x_hat.clamp(0, 1)
         x_c = x.clamp(0, 1)
+        if rml_eval:
+            full_psnr_list.extend(psnr(p[None], g[None]) for p, g in zip(x_hat_c, x_c))
+            x_hat_c, x_c = rml_evaluation_pair(x_hat, x)
+            if preview_dir and len(previews) < 8:
+                previews.append(tuple(item[0].detach().cpu() for item in (y, x_c, x_hat_c)))
 
-        l1_list.append(F.l1_loss(x_hat_c, x_c).item())
-        mse_list.append(F.mse_loss(x_hat_c, x_c).item())
-        psnr_list.append(psnr(x_hat_c, x_c))
-
-        # SSIM computed in float32 for numerical stability
-        ssim_val = float(ssim_torch(x_hat_c.float(), x_c.float(), window_size=ws, sigma=sigma, data_range=data_range).item())
-        ssim_list.append(ssim_val)
+        # Average per-image scores, including a possible incomplete final batch.
+        for prediction, target in zip(x_hat_c.split(1), x_c.split(1)):
+            l1_list.append(F.l1_loss(prediction, target).item())
+            mse_list.append(F.mse_loss(prediction, target).item())
+            psnr_list.append(psnr(prediction, target))
+            ssim_list.append(float(ssim_torch(prediction.float(), target.float(), window_size=ws,
+                                               sigma=sigma, data_range=data_range).item()))
 
         if region_eval_enabled(cfg):
             mask = rbc_region_mask(x_c, **roi_cfg.get("mask", {}))
@@ -190,18 +208,22 @@ def quick_eval(model, Hop, test_dl, cfg, device, max_batches=20, denom_min=0.05,
         return float(sum(lst) / max(1, len(lst)))
 
     result = {
+        "eval/samples": len(mse_list),
         "eval/l1": avg(l1_list),
         "eval/mse": avg(mse_list),
         "eval/psnr": avg(psnr_list),
         "eval/ssim": avg(ssim_list),
         "eval/dc_rmse": avg(dc_rmse_list) if dc_rmse_list else float("nan"),
     }
+    if full_psnr_list:
+        result["eval/full_frame_psnr"] = avg(full_psnr_list)
     for key, values in region_lists.items():
         result[f"eval/{key}"] = avg(values) if values else float("nan")
         if key in {"rbc_psnr", "background_psnr"}:
             result[f"eval/{key}_valid_samples"] = len(values)
     if previews:
-        save_region_preview(os.path.join(preview_dir, f"epoch_{epoch if epoch is not None else 'eval'}.png"), previews)
+        save_preview = save_rml_preview if rml_eval else save_region_preview
+        save_preview(os.path.join(preview_dir, f"epoch_{epoch if epoch is not None else 'eval'}.png"), previews)
     return result
 
 
@@ -234,6 +256,9 @@ def main(cfg):
     cfm_cfg = cfg["cfm"]
     roi_cfg = region_loss_config(cfg)
     roi_enabled = bool(roi_cfg.get("enabled", False))
+    spatial_cfg = cfm_cfg.get("loss", {}).get("spatial", {}) or {}
+    if roi_enabled and spatial_cfg.get("enabled", False):
+        raise ValueError("Choose either RBC region weighting or fixed spatial weighting")
     if (roi_enabled or region_eval_enabled(cfg)) and float(cfg["data"].get("downsample", 1)) != 1:
         raise ValueError("RBC pseudo-region defaults require native sampling (data.downsample=1).")
     if roi_enabled:
@@ -303,6 +328,25 @@ def main(cfg):
             path=cfg["data"].get("path", None),
             **data_loader_kwargs(cfg),
         )
+        subset_size = cfg.get("eval", {}).get("subset_size")
+        if subset_size is not None:
+            from torch.utils.data import DataLoader, Subset
+            if not 0 < int(subset_size) <= len(test_ds):
+                raise ValueError("eval.subset_size must be positive and no larger than the validation set")
+            indices = torch.linspace(0, len(test_ds) - 1, int(subset_size)).round().long().tolist()
+            test_dl = DataLoader(Subset(test_ds, indices), batch_size=1, shuffle=False, num_workers=0)
+    if isinstance(train_ds, ParallelLenslessRMLDataset):
+        if cfg.get("eval", {}).get("protocol") != "pld_rml_common_gt":
+            raise ValueError("PLD RML training requires eval.protocol=pld_rml_common_gt")
+        if cfg["data"].get("eval_split") not in {"val", "valid", "validation"}:
+            raise ValueError("PLD model selection must use validation, never the held-out test set")
+        print(f"PLD RML: {len(train_ds)} training, {len(test_ds) if test_ds else 0} validation pairs; "
+              f"epoch validation uses {min(eval_batches, len(test_dl)) if test_dl else 0} fixed images")
+        if train_ds.smoke_test:
+            print("SMOKE TEST: incomplete dataset, not a scientific training run")
+        if use_wandb:
+            wandb.run.summary.update({"data/train_pairs": len(train_ds), "data/validation_pairs": len(test_ds),
+                                      "data/smoke_test": train_ds.smoke_test})
 
     # -------------------------
     # Optional PSF + operator
@@ -360,7 +404,11 @@ def main(cfg):
         model = torch.compile(model, mode="max-autotune")
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["train"]["lr"])
-    scaler = GradScaler("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda")
+    amp_dtype_name = cfg["train"].get("amp_dtype", "float16")
+    if amp_dtype_name not in {"float16", "bfloat16"}:
+        raise ValueError("train.amp_dtype must be float16 or bfloat16")
+    amp_dtype = getattr(torch, amp_dtype_name)
+    scaler = GradScaler("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda" and amp_dtype == torch.float16)
 
     # -------------------------
     # ReduceLROnPlateau on the configured validation metric
@@ -422,7 +470,8 @@ def main(cfg):
 
     for epoch in range(1, cfg["train"]["epochs"] + 1):
         model.train()
-        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type}, {flow_matcher_name}, {time_tag})")
+        pbar = tqdm(train_dl, desc=f"epoch {epoch} ({pred_type}, {flow_matcher_name}, {time_tag})",
+                    mininterval=float(cfg["train"].get("progress_interval", 1)))
 
         sum_loss = 0.0
         sum_loss_v = 0.0
@@ -466,7 +515,7 @@ def main(cfg):
 
             den = (1.0 - t).clamp_min(denom_min).view(b, 1, 1, 1)
 
-            with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda"):
+            with autocast("cuda", enabled=bool(cfg["train"]["amp"]) and device.type == "cuda", dtype=amp_dtype):
                 out = model(x_t, y_cond, t if use_time_conditioning else None)
 
                 if pred_type == "vanilla":
@@ -483,6 +532,9 @@ def main(cfg):
                         foreground_weight=float(roi_cfg.get("foreground_weight", 0.75)),
                         balance_mix=float(roi_cfg.get("balance_mix", 0.5)),
                     )
+                elif spatial_cfg.get("enabled", False):
+                    velocity_loss, spatial_stats = spatial_cfm_loss(
+                        v_pred, v_star, spatial_cfg["crop"], float(spatial_cfg.get("crop_mix", 0.5)))
                 else:
                     velocity_loss = cfm_loss(v_pred, v_star)
                 loss_v = velocity_loss * cfg["cfm"]["loss"]["v_weight"]
@@ -491,8 +543,10 @@ def main(cfg):
                 if cfg["cfm"]["loss"]["physics_weight"] > 0:
                     loss_phys = physics_loss_from_v(x_t, v_pred, t, y_cond, Hop) * cfg["cfm"]["loss"]["physics_weight"]
 
-                loss = loss_v + loss_phys
+            loss = loss_v + loss_phys
 
+            if not torch.isfinite(loss):
+                raise FloatingPointError(f"Non-finite loss at epoch {epoch}, step {global_step}")
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
 
@@ -506,22 +560,25 @@ def main(cfg):
                         total += p.grad.detach().float().norm(2).item() ** 2
                 grad_norm = total ** 0.5
 
+            if not scaler.is_enabled() and not torch.isfinite(torch.tensor(grad_norm)):
+                raise FloatingPointError(f"Non-finite gradient at epoch {epoch}, step {global_step}")
             scaler.step(opt)
             scaler.update()
 
             lr = opt.param_groups[0]["lr"]
 
             pbar.set_postfix(
-                loss=float(loss),
-                loss_v=float(loss_v),
-                loss_phys=float(loss_phys),
+                loss=float(loss.detach()),
+                loss_v=float(loss_v.detach()),
+                loss_phys=float(loss_phys.detach()),
                 gnorm=float(grad_norm),
                 lr=float(lr),
+                refresh=False,
             )
 
-            sum_loss += float(loss)
-            sum_loss_v += float(loss_v)
-            sum_loss_phys += float(loss_phys)
+            sum_loss += float(loss.detach())
+            sum_loss_v += float(loss_v.detach())
+            sum_loss_phys += float(loss_phys.detach())
             n_batches += 1
 
             if use_wandb and (global_step % log_every == 0):
@@ -536,9 +593,9 @@ def main(cfg):
                     nan_or_inf = nan_or_inf or torch.isnan(x_pred).any() or torch.isinf(x_pred).any()
 
                 log_dict = {
-                    "train/loss": float(loss),
-                    "train/loss_v": float(loss_v),
-                    "train/loss_phys": float(loss_phys),
+                    "train/loss": float(loss.detach()),
+                    "train/loss_v": float(loss_v.detach()),
+                    "train/loss_phys": float(loss_phys.detach()),
                     "train/grad_norm": float(grad_norm),
                     "train/lr": float(lr),
                     "train/mode": 0.0 if pred_type == "vanilla" else 1.0,
@@ -554,6 +611,8 @@ def main(cfg):
                 for key, value in region_stats.items():
                     if torch.isfinite(value):
                         log_dict[f"train/region_{key}"] = float(value)
+                if spatial_cfg.get("enabled", False):
+                    log_dict.update({f"train/spatial_{k}": float(v) for k, v in spatial_stats.items()})
                 if fm_batch.x_init is not None:
                     log_dict["diag/x_init_rms"] = rms(fm_batch.x_init)
                 if pred_type == "btb" and x_pred is not None:
@@ -579,6 +638,7 @@ def main(cfg):
                     "epoch/lr": float(opt.param_groups[0]["lr"]),
                 },
                 step=global_step,
+                commit=False,
             )
 
         # -------------------------
@@ -594,7 +654,10 @@ def main(cfg):
             )
             save_eval_record(cfg, eval_metrics, epoch=epoch, step=global_step)
             if use_wandb:
-                wandb.log(eval_metrics, step=global_step)
+                wandb.log(eval_metrics, step=global_step, commit=False)
+                preview_path = os.path.join(cfg.get("eval", {}).get("preview_dir") or "", f"epoch_{epoch}.png")
+                if cfg.get("eval", {}).get("protocol") == "pld_rml_common_gt" and os.path.isfile(preview_path):
+                    wandb.log({"viz/validation": wandb.Image(preview_path)}, step=global_step, commit=False)
             else:
                 print(eval_metrics)
 
@@ -609,7 +672,7 @@ def main(cfg):
                     scheduler.step(eval_metrics[sched_metric])
 
                 if use_wandb:
-                    wandb.log({"sched/lr_after": float(opt.param_groups[0]["lr"])}, step=global_step)
+                    wandb.log({"sched/lr_after": float(opt.param_groups[0]["lr"])}, step=global_step, commit=False)
 
         # optional image logging
         if use_wandb and log_images_every > 0 and test_ds is not None and (epoch % log_images_every == 0):
@@ -647,6 +710,7 @@ def main(cfg):
                     "viz/recon_xhat": chw_to_wandb_image(x_hat_ex),
                 },
                 step=global_step,
+                commit=False,
             )
 
         # Preserve periodic/final weights and optionally the best validation model.
@@ -710,6 +774,22 @@ def main(cfg):
                 )
                 artifact.add_file(ckpt_path)
                 wandb.log_artifact(artifact, aliases=[f"epoch_{epoch}", "latest"])
+
+        if bool(cfg["train"].get("save_last_state", False)):
+            save_checkpoint_atomic({"model": model.state_dict(), "cfg": cfg, "epoch": epoch,
+                                    "global_step": global_step, "mode": pred_type, "model_name": model_name,
+                                    "use_time_conditioning": use_time_conditioning,
+                                    "optimizer": opt.state_dict(), "scaler": scaler.state_dict(),
+                                    "scheduler": scheduler.state_dict() if scheduler else None,
+                                    "best_score": best_score, "eval_metrics": eval_metrics,
+                                    "torch_rng": torch.random.get_rng_state(),
+                                    "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else []},
+                                   os.path.join(checkpoint_dir, "last_state.pt"))
+        if use_wandb:
+            # Commit epoch summaries together; separate commits at the same step
+            # discard later W&B values. Reserve the next step for the next epoch.
+            wandb.log({"epoch": epoch}, step=global_step)
+            global_step += 1
 
     if use_wandb:
         wandb.finish()

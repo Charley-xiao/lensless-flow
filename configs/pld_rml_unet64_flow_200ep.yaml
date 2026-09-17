@@ -1,0 +1,100 @@
+seed: 123
+device: cuda
+is_a100: true  # Enables TF32 on any compatible CUDA GPU.
+data:
+  dataset: pld_rml
+  path: /home/qiwen/datasets/parallel_lensless
+  split: train
+  eval_split: validation
+  downsample: 1  # Files are already downsampled 4x.
+  flip_ud: false
+  flip_lr: false
+  max_samples: null
+  smoke_test: false
+  pin_memory: false  # Disabled after a CUDA error surfaced in the pinned-host allocator.
+  num_workers: 4
+train:
+  mode: vanilla  # Predict flow velocity; this is not a direct-image U-Net.
+  init_checkpoint: null
+  batch_size: 8
+  lr: 0.0002
+  epochs: 200
+  grad_clip: 1.0
+  amp: false  # BF16 trials hit cuDNN backward failures on this GPU/runtime.
+  amp_dtype: bfloat16
+  save_every: 20
+  save_since_epoch: 0
+  save_best_metric: eval/ssim
+  save_best_mode: max
+  save_last_state: true
+  checkpoint_dir: checkpoints
+  metrics_path: outputs/validation_metrics.jsonl
+  eval_at_start: false
+  progress_interval: 30
+model:
+  name: unet
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 3
+  use_time_conditioning: true
+cfm:
+  matcher: rectified
+  t_min: 0.001
+  t_max: 0.999
+  t_distribution: beta
+  t_alpha: 0.5
+  t_beta: 0.5
+  sigma_data: 1.0
+  source:
+    mode: gaussian
+    sigma0: 1.0
+  loss:
+    v_weight: 1.0
+    physics_weight: 0.0
+    spatial:
+      enabled: true
+      crop: [31, 270, 128, 367]
+      crop_mix: 0.5
+physics:
+  disable_in_eval: true
+  dc_step_size: 0.0
+  dc_steps: 0
+sample:
+  steps: 40
+  solver: heun
+  init_noise_std: 1.0
+  save_dir: outputs/samples
+ssim:
+  window_size: 11
+  sigma: 1.5
+  data_range: 1.0
+eval:
+  protocol: pld_rml_common_gt
+  subset_size: 128
+  fixed_latent: true
+  seed: 20260917
+  seed_stride: 100003
+  preview_dir: outputs/previews
+wandb:
+  enabled: true
+  project: lensless-flow
+  entity: charleyxiao057-
+  name: pld_rml_unet64_flow_fov_200ep
+  tags: [pld, rml, rgb, pure-flow, unet64, beta-t, fov-loss, scratch, 200ep]
+  log_every: 50
+  eval_batches: 128
+  log_images_every: 0
+  log_artifacts: false
+btb:
+  denom_min: 0.05
+sched:
+  enabled: true
+  metric: eval/ssim
+  mode: max
+  factor: 0.5
+  patience: 10
+  threshold: 0.0001
+  cooldown: 0
+  min_lr: 0.00002
+compile:
+  enabled: false

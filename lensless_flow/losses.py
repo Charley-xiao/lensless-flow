@@ -7,6 +7,26 @@ def cfm_loss(v_pred, v_star):
     return F.mse_loss(v_pred, v_star)
 
 
+def spatial_cfm_loss(v_pred, v_star, crop, crop_mix=0.5):
+    """Positive fixed spatial weighting: mix full-frame and valid-crop velocity MSE.
+
+    Unlike target-derived masks, this deterministic weighting preserves the
+    pointwise population-optimal CFM velocity when crop_mix < 1.
+    """
+    import math
+    from .pld_protocol import crop_bchw
+    if not math.isfinite(float(crop_mix)) or not 0 <= crop_mix < 1:
+        raise ValueError("crop_mix must be finite and in [0,1) to supervise every pixel")
+    if v_pred.shape != v_star.shape:
+        raise ValueError("Velocity shapes must match")
+    error = (v_pred.float() - v_star.float()).square()
+    full = error.mean()
+    cropped = crop_bchw(error, crop).mean()
+    return (1 - crop_mix) * full + crop_mix * cropped, {
+        "full_mse": full.detach(), "crop_mse": cropped.detach(),
+    }
+
+
 def region_balanced_cfm_loss(v_pred, v_star, mask, foreground_weight=0.75,
                              balance_mix=0.5):
     """Blend ordinary velocity MSE with foreground/background balanced MSE.
